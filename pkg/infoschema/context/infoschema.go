@@ -43,6 +43,7 @@ type MetaOnlyInfoSchema interface {
 type SchemaAndTable interface {
 	AllSchemas() []*model.DBInfo
 	SchemaTableInfos(ctx stdctx.Context, schema model.CIStr) ([]*model.TableInfo, error)
+	TableCount(ctx stdctx.Context, schema model.CIStr) (int, error)
 }
 
 // Misc contains the methods that are not closely related to InfoSchema.
@@ -83,4 +84,14 @@ func (d DBInfoAsInfoSchema) SchemaTableInfos(ctx stdctx.Context, schema model.CI
 		}
 	}
 	return nil, nil
+}
+
+// SchemaTableInfos implement infoschema.SchemaAndTable interface.
+func (d DBInfoAsInfoSchema) TableCount(ctx stdctx.Context, schema model.CIStr) (int, error) {
+	for _, db := range d {
+		if db.Name == schema {
+			return len(db.Deprecated.Tables), nil
+		}
+	}
+	return 0, nil
 }

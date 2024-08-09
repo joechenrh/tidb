@@ -638,6 +638,7 @@ func findBestTask4LogicalMemTable(lp base.LogicalPlan, prop *property.PhysicalPr
 		return base.InvalidTask, 0, nil
 	}
 	memTable := PhysicalMemTable{
+		CountStar:      p.CountStar,
 		DBName:         p.DBName,
 		Table:          p.TableInfo,
 		Columns:        p.Columns,

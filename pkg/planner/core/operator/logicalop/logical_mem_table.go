@@ -40,6 +40,7 @@ import (
 type LogicalMemTable struct {
 	LogicalSchemaProducer
 
+	CountStar bool
 	Extractor base.MemTablePredicateExtractor
 	DBName    model.CIStr
 	TableInfo *model.TableInfo

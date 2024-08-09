@@ -88,6 +88,7 @@ import (
 
 type memtableRetriever struct {
 	dummyCloser
+	countStar   bool
 	table       *model.TableInfo
 	columns     []*model.ColumnInfo
 	rows        [][]types.Datum
@@ -122,109 +123,113 @@ func (e *memtableRetriever) retrieve(ctx context.Context, sctx sessionctx.Contex
 		}
 
 		var err error
-		switch e.table.Name.O {
-		case infoschema.TableSchemata:
-			err = e.setDataFromSchemata(sctx)
-		case infoschema.TableStatistics:
-			err = e.setDataForStatistics(ctx, sctx)
-		case infoschema.TableTables:
-			err = e.setDataFromTables(ctx, sctx)
-		case infoschema.TableReferConst:
-			dbs := getAllSchemas()
-			err = e.setDataFromReferConst(ctx, sctx, dbs)
-		case infoschema.TableSequences:
-			dbs := getAllSchemas()
-			err = e.setDataFromSequences(ctx, sctx, dbs)
-		case infoschema.TablePartitions:
-			err = e.setDataFromPartitions(ctx, sctx)
-		case infoschema.TableClusterInfo:
-			err = e.dataForTiDBClusterInfo(sctx)
-		case infoschema.TableAnalyzeStatus:
-			err = e.setDataForAnalyzeStatus(ctx, sctx)
-		case infoschema.TableTiDBIndexes:
-			dbs := getAllSchemas()
-			err = e.setDataFromIndexes(ctx, sctx, dbs)
-		case infoschema.TableViews:
-			dbs := getAllSchemas()
-			err = e.setDataFromViews(ctx, sctx, dbs)
-		case infoschema.TableEngines:
-			e.setDataFromEngines()
-		case infoschema.TableCharacterSets:
-			e.setDataFromCharacterSets()
-		case infoschema.TableCollations:
-			e.setDataFromCollations()
-		case infoschema.TableKeyColumn:
-			dbs := getAllSchemas()
-			err = e.setDataFromKeyColumnUsage(ctx, sctx, dbs)
-		case infoschema.TableMetricTables:
-			e.setDataForMetricTables()
-		case infoschema.TableProfiling:
-			e.setDataForPseudoProfiling(sctx)
-		case infoschema.TableCollationCharacterSetApplicability:
-			e.dataForCollationCharacterSetApplicability()
-		case infoschema.TableProcesslist:
-			e.setDataForProcessList(sctx)
-		case infoschema.ClusterTableProcesslist:
-			err = e.setDataForClusterProcessList(sctx)
-		case infoschema.TableUserPrivileges:
-			e.setDataFromUserPrivileges(sctx)
-		case infoschema.TableTiKVRegionStatus:
-			err = e.setDataForTiKVRegionStatus(ctx, sctx)
-		case infoschema.TableTiDBHotRegions:
-			err = e.setDataForTiDBHotRegions(ctx, sctx)
-		case infoschema.TableConstraints:
-			dbs := getAllSchemas()
-			err = e.setDataFromTableConstraints(ctx, sctx, dbs)
-		case infoschema.TableSessionVar:
-			e.rows, err = infoschema.GetDataFromSessionVariables(ctx, sctx)
-		case infoschema.TableTiDBServersInfo:
-			err = e.setDataForServersInfo(sctx)
-		case infoschema.TableTiFlashReplica:
-			dbs := getAllSchemas()
-			err = e.dataForTableTiFlashReplica(ctx, sctx, dbs)
-		case infoschema.TableTiKVStoreStatus:
-			err = e.dataForTiKVStoreStatus(ctx, sctx)
-		case infoschema.TableClientErrorsSummaryGlobal,
-			infoschema.TableClientErrorsSummaryByUser,
-			infoschema.TableClientErrorsSummaryByHost:
-			err = e.setDataForClientErrorsSummary(sctx, e.table.Name.O)
-		case infoschema.TableAttributes:
-			err = e.setDataForAttributes(ctx, sctx, is)
-		case infoschema.TablePlacementPolicies:
-			err = e.setDataFromPlacementPolicies(sctx)
-		case infoschema.TableTrxSummary:
-			err = e.setDataForTrxSummary(sctx)
-		case infoschema.ClusterTableTrxSummary:
-			err = e.setDataForClusterTrxSummary(sctx)
-		case infoschema.TableVariablesInfo:
-			err = e.setDataForVariablesInfo(sctx)
-		case infoschema.TableUserAttributes:
-			err = e.setDataForUserAttributes(ctx, sctx)
-		case infoschema.TableMemoryUsage:
-			err = e.setDataForMemoryUsage()
-		case infoschema.ClusterTableMemoryUsage:
-			err = e.setDataForClusterMemoryUsage(sctx)
-		case infoschema.TableMemoryUsageOpsHistory:
-			err = e.setDataForMemoryUsageOpsHistory()
-		case infoschema.ClusterTableMemoryUsageOpsHistory:
-			err = e.setDataForClusterMemoryUsageOpsHistory(sctx)
-		case infoschema.TableResourceGroups:
-			err = e.setDataFromResourceGroups()
-		case infoschema.TableRunawayWatches:
-			err = e.setDataFromRunawayWatches(sctx)
-		case infoschema.TableCheckConstraints:
-			dbs := getAllSchemas()
-			err = e.setDataFromCheckConstraints(ctx, sctx, dbs)
-		case infoschema.TableTiDBCheckConstraints:
-			dbs := getAllSchemas()
-			err = e.setDataFromTiDBCheckConstraints(ctx, sctx, dbs)
-		case infoschema.TableKeywords:
-			err = e.setDataFromKeywords()
-		case infoschema.TableTiDBIndexUsage:
-			err = e.setDataFromIndexUsage(ctx, sctx)
-		case infoschema.ClusterTableTiDBIndexUsage:
-			dbs := getAllSchemas()
-			err = e.setDataFromClusterIndexUsage(ctx, sctx, dbs)
+		if e.countStar {
+			err = e.setCountFromTables(ctx, sctx)
+		} else {
+			switch e.table.Name.O {
+			case infoschema.TableSchemata:
+				err = e.setDataFromSchemata(sctx)
+			case infoschema.TableStatistics:
+				err = e.setDataForStatistics(ctx, sctx)
+			case infoschema.TableTables:
+				err = e.setDataFromTables(ctx, sctx)
+			case infoschema.TableReferConst:
+				dbs := getAllSchemas()
+				err = e.setDataFromReferConst(ctx, sctx, dbs)
+			case infoschema.TableSequences:
+				dbs := getAllSchemas()
+				err = e.setDataFromSequences(ctx, sctx, dbs)
+			case infoschema.TablePartitions:
+				err = e.setDataFromPartitions(ctx, sctx)
+			case infoschema.TableClusterInfo:
+				err = e.dataForTiDBClusterInfo(sctx)
+			case infoschema.TableAnalyzeStatus:
+				err = e.setDataForAnalyzeStatus(ctx, sctx)
+			case infoschema.TableTiDBIndexes:
+				dbs := getAllSchemas()
+				err = e.setDataFromIndexes(ctx, sctx, dbs)
+			case infoschema.TableViews:
+				dbs := getAllSchemas()
+				err = e.setDataFromViews(ctx, sctx, dbs)
+			case infoschema.TableEngines:
+				e.setDataFromEngines()
+			case infoschema.TableCharacterSets:
+				e.setDataFromCharacterSets()
+			case infoschema.TableCollations:
+				e.setDataFromCollations()
+			case infoschema.TableKeyColumn:
+				dbs := getAllSchemas()
+				err = e.setDataFromKeyColumnUsage(ctx, sctx, dbs)
+			case infoschema.TableMetricTables:
+				e.setDataForMetricTables()
+			case infoschema.TableProfiling:
+				e.setDataForPseudoProfiling(sctx)
+			case infoschema.TableCollationCharacterSetApplicability:
+				e.dataForCollationCharacterSetApplicability()
+			case infoschema.TableProcesslist:
+				e.setDataForProcessList(sctx)
+			case infoschema.ClusterTableProcesslist:
+				err = e.setDataForClusterProcessList(sctx)
+			case infoschema.TableUserPrivileges:
+				e.setDataFromUserPrivileges(sctx)
+			case infoschema.TableTiKVRegionStatus:
+				err = e.setDataForTiKVRegionStatus(ctx, sctx)
+			case infoschema.TableTiDBHotRegions:
+				err = e.setDataForTiDBHotRegions(ctx, sctx)
+			case infoschema.TableConstraints:
+				dbs := getAllSchemas()
+				err = e.setDataFromTableConstraints(ctx, sctx, dbs)
+			case infoschema.TableSessionVar:
+				e.rows, err = infoschema.GetDataFromSessionVariables(ctx, sctx)
+			case infoschema.TableTiDBServersInfo:
+				err = e.setDataForServersInfo(sctx)
+			case infoschema.TableTiFlashReplica:
+				dbs := getAllSchemas()
+				err = e.dataForTableTiFlashReplica(ctx, sctx, dbs)
+			case infoschema.TableTiKVStoreStatus:
+				err = e.dataForTiKVStoreStatus(ctx, sctx)
+			case infoschema.TableClientErrorsSummaryGlobal,
+				infoschema.TableClientErrorsSummaryByUser,
+				infoschema.TableClientErrorsSummaryByHost:
+				err = e.setDataForClientErrorsSummary(sctx, e.table.Name.O)
+			case infoschema.TableAttributes:
+				err = e.setDataForAttributes(ctx, sctx, is)
+			case infoschema.TablePlacementPolicies:
+				err = e.setDataFromPlacementPolicies(sctx)
+			case infoschema.TableTrxSummary:
+				err = e.setDataForTrxSummary(sctx)
+			case infoschema.ClusterTableTrxSummary:
+				err = e.setDataForClusterTrxSummary(sctx)
+			case infoschema.TableVariablesInfo:
+				err = e.setDataForVariablesInfo(sctx)
+			case infoschema.TableUserAttributes:
+				err = e.setDataForUserAttributes(ctx, sctx)
+			case infoschema.TableMemoryUsage:
+				err = e.setDataForMemoryUsage()
+			case infoschema.ClusterTableMemoryUsage:
+				err = e.setDataForClusterMemoryUsage(sctx)
+			case infoschema.TableMemoryUsageOpsHistory:
+				err = e.setDataForMemoryUsageOpsHistory()
+			case infoschema.ClusterTableMemoryUsageOpsHistory:
+				err = e.setDataForClusterMemoryUsageOpsHistory(sctx)
+			case infoschema.TableResourceGroups:
+				err = e.setDataFromResourceGroups()
+			case infoschema.TableRunawayWatches:
+				err = e.setDataFromRunawayWatches(sctx)
+			case infoschema.TableCheckConstraints:
+				dbs := getAllSchemas()
+				err = e.setDataFromCheckConstraints(ctx, sctx, dbs)
+			case infoschema.TableTiDBCheckConstraints:
+				dbs := getAllSchemas()
+				err = e.setDataFromTiDBCheckConstraints(ctx, sctx, dbs)
+			case infoschema.TableKeywords:
+				err = e.setDataFromKeywords()
+			case infoschema.TableTiDBIndexUsage:
+				err = e.setDataFromIndexUsage(ctx, sctx)
+			case infoschema.ClusterTableTiDBIndexUsage:
+				dbs := getAllSchemas()
+				err = e.setDataFromClusterIndexUsage(ctx, sctx, dbs)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -247,7 +252,10 @@ func (e *memtableRetriever) retrieve(ctx context.Context, sctx sessionctx.Contex
 		ret[i-e.rowIdx] = e.rows[i]
 	}
 	e.rowIdx += retCount
-	return adjustColumns(ret, e.columns, e.table), nil
+	if !e.countStar {
+		ret = adjustColumns(ret, e.columns, e.table)
+	}
+	return ret, nil
 }
 
 func getAutoIncrementID(
@@ -735,6 +743,27 @@ func (e *memtableRetriever) setDataFromTables(ctx context.Context, sctx sessionc
 		}
 	}
 	e.rows = rows
+	return nil
+}
+
+func (e *memtableRetriever) setCountFromTables(ctx context.Context, sctx sessionctx.Context) error {
+	loc := sctx.GetSessionVars().TimeZone
+	if loc == nil {
+		loc = time.Local
+	}
+	ex, ok := e.extractor.(*plannercore.InfoSchemaTablesExtractor)
+	if !ok {
+		return errors.Errorf("wrong extractor type: %T, expected InfoSchemaTablesExtractor", e.extractor)
+	}
+	if ex.SkipRequest {
+		return nil
+	}
+
+	count, err := ex.ListCount(ctx, e.is)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	e.rows = [][]types.Datum{types.MakeDatums(count)}
 	return nil
 }
 

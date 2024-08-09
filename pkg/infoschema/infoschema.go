@@ -334,6 +334,15 @@ func (is *infoSchema) SchemaTableInfos(ctx stdctx.Context, schema model.CIStr) (
 	return tables, nil
 }
 
+// SchemaTableInfos implements MetaOnlyInfoSchema.
+func (is *infoSchema) TableCount(ctx stdctx.Context, schema model.CIStr) (int, error) {
+	schemaTables, ok := is.schemaMap[schema.L]
+	if !ok {
+		return 0, nil
+	}
+	return len(schemaTables.tables), nil
+}
+
 // SchemaSimpleTableInfos implements MetaOnlyInfoSchema.
 func (is *infoSchema) SchemaSimpleTableInfos(ctx stdctx.Context, schema model.CIStr) ([]*model.TableNameInfo, error) {
 	schemaTables, ok := is.schemaMap[schema.L]

@@ -671,6 +671,26 @@ func (a *AggregationPushDownSolver) aggPushDown(p base.LogicalPlan, opt *optimiz
 				if err != nil {
 					return nil, err
 				}
+			} else if mem, ok1 := child.(*logicalop.LogicalMemTable); len(agg.GroupByItems) == 0 && ok1 && mem.TableInfo.Name.L == "tables" {
+				for _, aggFunc := range agg.AggFuncs {
+					if aggFunc.Name != ast.AggFuncCount {
+						ok1 = false
+						break
+					}
+					for _, arg := range aggFunc.Args {
+						// bail out when args are not simple column, see GitHub issue #35417
+						if _, ok := arg.(*expression.Constant); !ok {
+							ok1 = false
+							break
+						}
+					}
+				}
+
+				if ok1 {
+					mem.SetSchema(agg.Schema())
+					mem.CountStar = true
+					return mem, nil
+				}
 			}
 		}
 	}

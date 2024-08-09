@@ -226,6 +226,37 @@ func (e *InfoSchemaTablesExtractor) ListSchemasAndTables(
 	return listTablesForEachSchema(ctx, is, schemas)
 }
 
+func (e *InfoSchemaTablesExtractor) ListCount(
+	ctx context.Context,
+	is infoschema.InfoSchema,
+) (int, error) {
+	schemas := e.listSchemas(is, _tableSchema)
+
+	tableIDs := e.getSchemaObjectNames(_tidbTableID)
+	tableNames := e.getSchemaObjectNames(_tableName)
+
+	if len(tableIDs) > 0 {
+		tableMap := make(map[int64]*model.TableInfo, len(tableIDs))
+		findTablesByID(is, tableIDs, tableNames, tableMap)
+		li, _, err := findSchemasForTables(ctx, is, schemas, maps.Values(tableMap))
+		return len(li), err
+	}
+	if len(tableNames) > 0 {
+		li, _, err := findTableAndSchemaByName(ctx, is, schemas, tableNames)
+		return len(li), err
+	}
+
+	allCount := 0
+	for _, s := range schemas {
+		count, err := is.TableCount(ctx, s)
+		if err != nil {
+			return 0, errors.Trace(err)
+		}
+		allCount += count
+	}
+	return allCount, nil
+}
+
 // InfoSchemaPartitionsExtractor is the predicate extractor for information_schema.partitions.
 type InfoSchemaPartitionsExtractor struct {
 	InfoSchemaBaseExtractor

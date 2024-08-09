@@ -1121,6 +1121,24 @@ func (m *Meta) ListTables(dbID int64) ([]*model.TableInfo, error) {
 	return tables, nil
 }
 
+func (m *Meta) ListTableCount(dbID int64) (int, error) {
+	res, err := m.GetMetasByDBID(dbID)
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
+
+	count := 0
+	for _, r := range res {
+		// only handle table meta
+		tableKey := string(r.Field)
+		if strings.HasPrefix(tableKey, mTablePrefix) {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 // ListSimpleTables shows all simple tables in database.
 func (m *Meta) ListSimpleTables(dbID int64) ([]*model.TableNameInfo, error) {
 	res, err := m.GetMetasByDBID(dbID)

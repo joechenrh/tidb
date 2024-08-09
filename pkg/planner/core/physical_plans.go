@@ -858,6 +858,7 @@ func AddExtraPhysTblIDColumn(sctx base.PlanContext, columns []*model.ColumnInfo,
 type PhysicalMemTable struct {
 	physicalSchemaProducer
 
+	CountStar      bool
 	DBName         model.CIStr
 	Table          *model.TableInfo
 	Columns        []*model.ColumnInfo

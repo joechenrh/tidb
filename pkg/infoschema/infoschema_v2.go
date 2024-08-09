@@ -778,6 +778,50 @@ retry:
 	}
 	return tblInfos, nil
 }
+func (is *infoschemaV2) TableCount(ctx context.Context, schema model.CIStr) (int, error) {
+	if IsSpecialDB(schema.L) {
+		raw, ok := is.Data.specials.Load(schema.L)
+		if ok {
+			schTbls := raw.(*schemaTables)
+			tables := make([]table.Table, 0, len(schTbls.tables))
+			for _, tbl := range schTbls.tables {
+				tables = append(tables, tbl)
+			}
+			return len(getTableInfoList(tables)), nil
+		}
+		return 0, nil // something wrong?
+	}
+
+retry:
+	dbInfo, ok := is.SchemaByName(schema)
+	if !ok {
+		return 0, nil
+	}
+	snapshot := is.r.Store().GetSnapshot(kv.NewVersion(is.ts))
+	// Using the KV timeout read feature to address the issue of potential DDL lease expiration when
+	// the meta region leader is slow.
+	snapshot.SetOption(kv.TiKVClientReadTimeout, uint64(3000)) // 3000ms.
+	m := meta.NewSnapshotMeta(snapshot)
+	count, err := m.ListTableCount(dbInfo.ID)
+	if err != nil {
+		if meta.ErrDBNotExists.Equal(err) {
+			return 0, nil
+		}
+		// Flashback statement could cause such kind of error.
+		// In theory that error should be handled in the lower layer, like client-go.
+		// But it's not done, so we retry here.
+		if strings.Contains(err.Error(), "in flashback progress") {
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+			goto retry
+		}
+		return 0, errors.Trace(err)
+	}
+	return count, nil
+}
 
 // SchemaSimpleTableInfos implements MetaOnlyInfoSchema.
 func (is *infoschemaV2) SchemaSimpleTableInfos(ctx context.Context, schema model.CIStr) ([]*model.TableNameInfo, error) {
