@@ -2274,11 +2274,11 @@ func (b *executorBuilder) buildMemTable(v *plannercore.PhysicalMemTable) exec.Ex
 				BaseExecutor: exec.NewBaseExecutor(b.ctx, v.Schema(), v.ID()),
 				table:        v.Table,
 				retriever: &memtableRetriever{
-					countStar:  v.CountStar,
-					table:      v.Table,
-					columns:    v.Columns,
-					extractor:  v.Extractor,
-					memTracker: memTracker,
+					CountStarNumber: v.CountStarNumber,
+					table:           v.Table,
+					columns:         v.Columns,
+					extractor:       v.Extractor,
+					memTracker:      memTracker,
 				},
 			}
 		case strings.ToLower(infoschema.TableTiDBTrx),

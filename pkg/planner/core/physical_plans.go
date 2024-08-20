@@ -858,12 +858,12 @@ func AddExtraPhysTblIDColumn(sctx base.PlanContext, columns []*model.ColumnInfo,
 type PhysicalMemTable struct {
 	physicalSchemaProducer
 
-	CountStar      bool
-	DBName         model.CIStr
-	Table          *model.TableInfo
-	Columns        []*model.ColumnInfo
-	Extractor      base.MemTablePredicateExtractor
-	QueryTimeRange util.QueryTimeRange
+	CountStarNumber int
+	DBName          model.CIStr
+	Table           *model.TableInfo
+	Columns         []*model.ColumnInfo
+	Extractor       base.MemTablePredicateExtractor
+	QueryTimeRange  util.QueryTimeRange
 }
 
 // MemoryUsage return the memory usage of PhysicalMemTable

@@ -88,16 +88,16 @@ import (
 
 type memtableRetriever struct {
 	dummyCloser
-	countStar   bool
-	table       *model.TableInfo
-	columns     []*model.ColumnInfo
-	rows        [][]types.Datum
-	rowIdx      int
-	retrieved   bool
-	initialized bool
-	extractor   base.MemTablePredicateExtractor
-	is          infoschema.InfoSchema
-	memTracker  *memory.Tracker
+	CountStarNumber int
+	table           *model.TableInfo
+	columns         []*model.ColumnInfo
+	rows            [][]types.Datum
+	rowIdx          int
+	retrieved       bool
+	initialized     bool
+	extractor       base.MemTablePredicateExtractor
+	is              infoschema.InfoSchema
+	memTracker      *memory.Tracker
 }
 
 // retrieve implements the infoschemaRetriever interface
@@ -123,7 +123,7 @@ func (e *memtableRetriever) retrieve(ctx context.Context, sctx sessionctx.Contex
 		}
 
 		var err error
-		if e.countStar {
+		if e.CountStarNumber > 0 {
 			err = e.setCountFromTables(ctx, sctx)
 		} else {
 			switch e.table.Name.O {
@@ -252,7 +252,7 @@ func (e *memtableRetriever) retrieve(ctx context.Context, sctx sessionctx.Contex
 		ret[i-e.rowIdx] = e.rows[i]
 	}
 	e.rowIdx += retCount
-	if !e.countStar {
+	if e.CountStarNumber == 0 {
 		ret = adjustColumns(ret, e.columns, e.table)
 	}
 	return ret, nil
@@ -747,10 +747,6 @@ func (e *memtableRetriever) setDataFromTables(ctx context.Context, sctx sessionc
 }
 
 func (e *memtableRetriever) setCountFromTables(ctx context.Context, sctx sessionctx.Context) error {
-	loc := sctx.GetSessionVars().TimeZone
-	if loc == nil {
-		loc = time.Local
-	}
 	ex, ok := e.extractor.(*plannercore.InfoSchemaTablesExtractor)
 	if !ok {
 		return errors.Errorf("wrong extractor type: %T, expected InfoSchemaTablesExtractor", e.extractor)
@@ -763,7 +759,12 @@ func (e *memtableRetriever) setCountFromTables(ctx context.Context, sctx session
 	if err != nil {
 		return errors.Trace(err)
 	}
-	e.rows = [][]types.Datum{types.MakeDatums(count)}
+
+	e.rows = make([][]types.Datum, 1)
+	e.rows[0] = make([]types.Datum, e.CountStarNumber)
+	for i := 0; i < e.CountStarNumber; i++ {
+		e.rows[0][i] = types.NewDatum(count)
+	}
 	return nil
 }
 

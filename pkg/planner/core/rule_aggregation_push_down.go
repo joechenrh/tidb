@@ -37,6 +37,27 @@ type AggregationPushDownSolver struct {
 	aggregationEliminateChecker
 }
 
+func canPushDownToLogicalMemTable(mem *logicalop.LogicalMemTable, agg *LogicalAggregation) bool {
+	if len(agg.GroupByItems) > 0 || mem.TableInfo.Name.L != "tables" {
+		return false
+	}
+
+	for _, aggFunc := range agg.AggFuncs {
+		if aggFunc.Name != ast.AggFuncCount {
+			return false
+		}
+
+		for _, arg := range aggFunc.Args {
+			// bail out when args are not simple column, see GitHub issue #35417
+			if _, ok := arg.(*expression.Constant); !ok {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
 // isDecomposable checks if an aggregate function is decomposable. An aggregation function $F$ is decomposable
 // if there exist aggregation functions F_1 and F_2 such that F(S_1 union all S_2) = F_2(F_1(S_1),F_1(S_2)),
 // where S_1 and S_2 are two sets of values. We call S_1 and S_2 partial groups.
@@ -671,26 +692,10 @@ func (a *AggregationPushDownSolver) aggPushDown(p base.LogicalPlan, opt *optimiz
 				if err != nil {
 					return nil, err
 				}
-			} else if mem, ok1 := child.(*logicalop.LogicalMemTable); len(agg.GroupByItems) == 0 && ok1 && mem.TableInfo.Name.L == "tables" {
-				for _, aggFunc := range agg.AggFuncs {
-					if aggFunc.Name != ast.AggFuncCount {
-						ok1 = false
-						break
-					}
-					for _, arg := range aggFunc.Args {
-						// bail out when args are not simple column, see GitHub issue #35417
-						if _, ok := arg.(*expression.Constant); !ok {
-							ok1 = false
-							break
-						}
-					}
-				}
-
-				if ok1 {
-					mem.SetSchema(agg.Schema())
-					mem.CountStar = true
-					return mem, nil
-				}
+			} else if mem, ok1 := child.(*logicalop.LogicalMemTable); ok1 && canPushDownToLogicalMemTable(mem, agg) {
+				mem.SetSchema(agg.Schema())
+				mem.CountStarNumber = len(agg.AggFuncs)
+				return mem, nil
 			}
 		}
 	}
