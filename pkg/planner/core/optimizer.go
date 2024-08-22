@@ -488,10 +488,7 @@ func countStarRewriteInternal(plan base.PhysicalPlan) {
 		return
 	}
 	for _, aggFunc := range physicalAgg.AggFuncs {
-		if aggFunc.Name != "count" || len(aggFunc.Args) != 1 || aggFunc.HasDistinct {
-			return
-		}
-		if _, ok := aggFunc.Args[0].(*expression.Constant); !ok {
+		if !logicalop.IsCountStarAgg(aggFunc) {
 			return
 		}
 	}

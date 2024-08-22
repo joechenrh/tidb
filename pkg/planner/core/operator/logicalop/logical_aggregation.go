@@ -61,6 +61,16 @@ func (la LogicalAggregation) Init(ctx base.PlanContext, offset int) *LogicalAggr
 	return &la
 }
 
+func IsCountStarAgg(aggFunc *aggregation.AggFuncDesc) bool {
+	if aggFunc.Name != "count" || len(aggFunc.Args) != 1 || aggFunc.HasDistinct {
+		return false
+	}
+	if _, ok := aggFunc.Args[0].(*expression.Constant); !ok {
+		return false
+	}
+	return true
+}
+
 // *************************** start implementation of Plan interface ***************************
 
 // ExplainInfo implements base.Plan.<4th> interface.
@@ -117,6 +127,17 @@ func (la *LogicalAggregation) PruneColumns(parentUsedCols []*expression.Column, 
 	prunedColumns := make([]*expression.Column, 0)
 	prunedFunctions := make([]*aggregation.AggFuncDesc, 0)
 	prunedGroupByItems := make([]expression.Expression, 0)
+
+	// For information_schema.tables, using count(*) is equal to count(table_schema) is equivaient,
+	// so we modify AggFuncs here to make optimization in memtableRetriever work.
+	if mem, isChildMemtable := child.(*LogicalMemTable); isChildMemtable {
+		for _, aggrFunc := range la.AggFuncs {
+			if IsCountStarAgg(aggrFunc) {
+				// TODO: how to choose a proper column for different memtable?
+				aggrFunc.Args[0] = mem.Schema().Columns[1].Clone()
+			}
+		}
+	}
 
 	allFirstRow := true
 	allRemainFirstRow := true
