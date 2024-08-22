@@ -17,6 +17,7 @@ package logicalop
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/pingcap/tidb/pkg/expression"
 	"github.com/pingcap/tidb/pkg/expression/aggregation"
@@ -61,6 +62,7 @@ func (la LogicalAggregation) Init(ctx base.PlanContext, offset int) *LogicalAggr
 	return &la
 }
 
+// Check whether given aggFunc is count star agg
 func IsCountStarAgg(aggFunc *aggregation.AggFuncDesc) bool {
 	if aggFunc.Name != "count" || len(aggFunc.Args) != 1 || aggFunc.HasDistinct {
 		return false
@@ -128,13 +130,15 @@ func (la *LogicalAggregation) PruneColumns(parentUsedCols []*expression.Column, 
 	prunedFunctions := make([]*aggregation.AggFuncDesc, 0)
 	prunedGroupByItems := make([]expression.Expression, 0)
 
-	// For information_schema.tables, using count(*) is equal to count(table_schema) is equivaient,
-	// so we modify AggFuncs here to make optimization in memtableRetriever work.
+	// For some information_schema.tables, count(*) and count(table_schema) are equivaient,
+	// so we modify AggFuncs here to make optimization in memtableRetriever works.
+	// This must be done before column pruning.
 	if mem, isChildMemtable := child.(*LogicalMemTable); isChildMemtable {
-		for _, aggrFunc := range la.AggFuncs {
-			if IsCountStarAgg(aggrFunc) {
-				// TODO: how to choose a proper column for different memtable?
-				aggrFunc.Args[0] = mem.Schema().Columns[1].Clone()
+		if idx, ok := CountStarColumnMap[strings.ToUpper(mem.TableInfo.Name.L)]; ok {
+			for _, aggrFunc := range la.AggFuncs {
+				if IsCountStarAgg(aggrFunc) {
+					aggrFunc.Args[0] = mem.Schema().Columns[idx].Clone()
+				}
 			}
 		}
 	}

@@ -59,6 +59,12 @@ func (p LogicalMemTable) Init(ctx base.PlanContext, offset int) *LogicalMemTable
 	return &p
 }
 
+// Mapping for count star conversion, indicates which column to use for aggregation
+var CountStarColumnMap = map[string]int{
+	infoschema.TableTables:   1,
+	infoschema.TableSchemata: 1,
+}
+
 // *************************** start implementation of logicalPlan interface ***************************
 
 // HashCode inherits BaseLogicalPlan.<0th> implementation.
