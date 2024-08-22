@@ -15,6 +15,8 @@
 package logicalop
 
 import (
+	"strings"
+
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/pkg/expression"
 	"github.com/pingcap/tidb/pkg/infoschema"
@@ -60,9 +62,23 @@ func (p LogicalMemTable) Init(ctx base.PlanContext, offset int) *LogicalMemTable
 }
 
 // Mapping for count star conversion, indicates which column to use for aggregation
-var CountStarColumnMap = map[string]int{
-	infoschema.TableTables:   1,
-	infoschema.TableSchemata: 1,
+var countStarColumnMap = map[string]string{
+	infoschema.TableTables:   "table_schema",
+	infoschema.TableSchemata: "table_schema",
+}
+
+// Find target column for count star
+func (p LogicalMemTable) FindTargetColumn() *expression.Column {
+	targetColName, ok := countStarColumnMap[strings.ToUpper(p.TableInfo.Name.O)]
+	if !ok {
+		return nil
+	}
+	for i, col := range p.schema.Columns {
+		if targetColName == p.Columns[i].Name.L {
+			return col
+		}
+	}
+	return nil
 }
 
 // *************************** start implementation of logicalPlan interface ***************************

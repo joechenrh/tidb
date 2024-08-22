@@ -17,7 +17,6 @@ package logicalop
 import (
 	"bytes"
 	"fmt"
-	"strings"
 
 	"github.com/pingcap/tidb/pkg/expression"
 	"github.com/pingcap/tidb/pkg/expression/aggregation"
@@ -130,19 +129,6 @@ func (la *LogicalAggregation) PruneColumns(parentUsedCols []*expression.Column, 
 	prunedFunctions := make([]*aggregation.AggFuncDesc, 0)
 	prunedGroupByItems := make([]expression.Expression, 0)
 
-	// For some information_schema.tables, count(*) and count(table_schema) are equivaient,
-	// so we modify AggFuncs here to make optimization in memtableRetriever works.
-	// This must be done before column pruning.
-	if mem, isChildMemtable := child.(*LogicalMemTable); isChildMemtable {
-		if idx, ok := CountStarColumnMap[strings.ToUpper(mem.TableInfo.Name.L)]; ok {
-			for _, aggrFunc := range la.AggFuncs {
-				if IsCountStarAgg(aggrFunc) {
-					aggrFunc.Args[0] = mem.Schema().Columns[idx].Clone()
-				}
-			}
-		}
-	}
-
 	allFirstRow := true
 	allRemainFirstRow := true
 	for i := len(used) - 1; i >= 0; i-- {
@@ -208,6 +194,20 @@ func (la *LogicalAggregation) PruneColumns(parentUsedCols []*expression.Column, 
 			la.GroupByItems = []expression.Expression{expression.NewOne()}
 		}
 	}
+
+	// To make optimization in memtableRetriever also works for count(*)/count(1),
+	// we have to manually add specified columns to selfUsedCols before pruning LogicalMemTable
+	if mem, isChildMemtable := child.(*LogicalMemTable); isChildMemtable {
+		if col := mem.FindTargetColumn(); col != nil {
+			for _, aggrFunc := range la.AggFuncs {
+				if IsCountStarAgg(aggrFunc) {
+					selfUsedCols = append(selfUsedCols, col)
+					break
+				}
+			}
+		}
+	}
+
 	logicaltrace.AppendGroupByItemsPruneTraceStep(la, prunedGroupByItems, opt)
 	var err error
 	la.Children()[0], err = child.PruneColumns(selfUsedCols, opt)
