@@ -375,7 +375,7 @@ func (s *importStepExecutor) Cleanup(_ context.Context) (err error) {
 
 type mergeSortStepExecutor struct {
 	taskexecutor.BaseStepExecutor
-	taskID   int64
+	task     *proto.TaskBase
 	taskMeta *TaskMeta
 	logger   *zap.Logger
 	// subtask of a task is run in serial now, so we don't need lock here.
@@ -440,7 +440,7 @@ func (m *mergeSortStepExecutor) RunSubtask(ctx context.Context, subtask *proto.S
 		m.subtaskSortedKVMeta.MergeSummary(summary)
 	}
 
-	prefix := subtaskPrefix(m.taskID, subtask.ID)
+	prefix := subtaskPrefix(m.task.ID, subtask.ID)
 
 	partSize := m.dataKVPartSize
 	if sm.KVGroup != dataKVGroup {
@@ -477,7 +477,7 @@ func (m *mergeSortStepExecutor) onFinished(ctx context.Context, subtask *proto.S
 		return errors.Trace(err)
 	}
 	subtaskMeta.SortedKVMeta = *m.subtaskSortedKVMeta
-	subtaskMeta.ExternalPath = external.SubtaskMetaPath(m.taskID, subtask.ID)
+	subtaskMeta.ExternalPath = external.SubtaskMetaPath(m.task.ID, subtask.ID)
 	if err := subtaskMeta.WriteJSONToExternalStorage(ctx, sortStore, subtaskMeta); err != nil {
 		return errors.Trace(err)
 	}
@@ -769,7 +769,7 @@ func (e *importExecutor) GetStepExecutor(task *proto.Task) (execute.StepExecutor
 		}, nil
 	case proto.ImportStepMergeSort:
 		return &mergeSortStepExecutor{
-			taskID:   task.ID,
+			task:     &task.TaskBase,
 			taskMeta: &taskMeta,
 			logger:   logger,
 			store:    store,

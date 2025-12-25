@@ -482,7 +482,10 @@ func TestNextGenMetering(t *testing.T) {
 
 	s.Eventually(func() bool {
 		items := *rowAndSizeMeterItems.Load()
-		return items != nil && items["row_count"].(int64) == 3 &&
-			items["data_kv_bytes"].(int64) == 114 && items["index_kv_bytes"].(int64) == 174
+		return items != nil && items[metering.RowCountField].(int64) == 3 &&
+			items[metering.DataKVBytesField].(int64) == 114 && items[metering.IndexKVBytesField].(int64) == 174 &&
+			items[metering.RequiredSlotsField].(int) == task.RequiredSlots &&
+			items[metering.MaxNodeCountField].(int) == task.MaxNodeCount &&
+			items[metering.DurationSecondsField].(int64) > 0
 	}, 30*time.Second, 100*time.Millisecond)
 }

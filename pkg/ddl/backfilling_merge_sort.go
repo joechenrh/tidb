@@ -38,6 +38,7 @@ import (
 
 type mergeSortExecutor struct {
 	taskexecutor.BaseStepExecutor
+	task          *proto.TaskBase
 	store         kv.Storage
 	jobID         int64
 	indexes       []*model.IndexInfo
@@ -50,6 +51,7 @@ type mergeSortExecutor struct {
 }
 
 func newMergeSortExecutor(
+	task *proto.TaskBase,
 	store kv.Storage,
 	jobID int64,
 	indexes []*model.IndexInfo,
@@ -57,6 +59,7 @@ func newMergeSortExecutor(
 	cloudStoreURI string,
 ) (*mergeSortExecutor, error) {
 	return &mergeSortExecutor{
+		task:          task,
 		store:         store,
 		jobID:         jobID,
 		indexes:       indexes,
