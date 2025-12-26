@@ -118,6 +118,9 @@ func (s *importStepExecutor) Init(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	// when creating the table importer, it's using plan.ThreadCnt, not the resource
+	// CPU, we should refactor it later, that requires refactors the local backend.
+	tableImporter.Backend().WorkerConcurrency = int(s.GetResource().CPU.Capacity())
 	s.tableImporter = tableImporter
 	defer func() {
 		if err == nil {
@@ -542,6 +545,7 @@ func (e *writeAndIngestStepExecutor) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	tableImporter.Backend().WorkerConcurrency = int(e.GetResource().CPU.Capacity())
 	e.tableImporter = tableImporter
 	return nil
 }

@@ -2724,8 +2724,8 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 	}
 
 	var (
-		taskID                                            int64
-		lastConcurrency, lastBatchSize, lastMaxWriteSpeed int
+		taskID                                              int64
+		lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed int
 	)
 	if task != nil {
 		// It's possible that the task state is succeed but the ddl job is paused.
@@ -2742,7 +2742,7 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 			return errors.Trace(err)
 		}
 		taskID = task.ID
-		lastConcurrency = task.RequiredSlots
+		lastRequiredSlots = task.RequiredSlots
 		lastBatchSize = taskMeta.Job.ReorgMeta.GetBatchSize()
 		lastMaxWriteSpeed = taskMeta.Job.ReorgMeta.GetMaxWriteSpeed()
 		g.Go(func() error {
@@ -2768,12 +2768,12 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 	} else {
 		job := reorgInfo.Job
 		workerCntLimit := job.ReorgMeta.GetConcurrency()
-		concurrency, err := adjustConcurrency(ctx, taskManager, workerCntLimit)
+		requiredSlots, err := adjustConcurrency(ctx, taskManager, workerCntLimit)
 		if err != nil {
 			return err
 		}
-		logutil.DDLLogger().Info("adjusted add-index task concurrency",
-			zap.Int("worker-cnt", workerCntLimit), zap.Int("task-concurrency", concurrency),
+		logutil.DDLLogger().Info("adjusted add-index task required slots",
+			zap.Int("worker-cnt", workerCntLimit), zap.Int("required-slots", requiredSlots),
 			zap.String("task-key", taskKey))
 		rowSize := estimateTableRowSize(w.workCtx, w.store, w.sess.GetRestrictedSQLExecutor(), t)
 		taskMeta := &BackfillTaskMeta{
@@ -2793,13 +2793,13 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 
 		targetScope := reorgInfo.ReorgMeta.TargetScope
 		maxNodeCnt := reorgInfo.ReorgMeta.MaxNodeCount
-		task, err := handle.SubmitTask(ctx, taskKey, taskType, w.store.GetKeyspace(), concurrency, targetScope, maxNodeCnt, metaData)
+		task, err := handle.SubmitTask(ctx, taskKey, taskType, w.store.GetKeyspace(), requiredSlots, targetScope, maxNodeCnt, metaData)
 		if err != nil {
 			return err
 		}
 
 		taskID = task.ID
-		lastConcurrency = concurrency
+		lastRequiredSlots = requiredSlots
 		lastBatchSize = taskMeta.Job.ReorgMeta.GetBatchSize()
 		lastMaxWriteSpeed = taskMeta.Job.ReorgMeta.GetMaxWriteSpeed()
 
@@ -2853,7 +2853,7 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 
 	g.Go(func() error {
 		modifyTaskParamLoop(ctx, jobCtx.sysTblMgr, taskManager, done,
-			reorgInfo.Job.ID, taskID, lastConcurrency, lastBatchSize, lastMaxWriteSpeed)
+			reorgInfo.Job.ID, taskID, lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed)
 		return nil
 	})
 
@@ -2875,7 +2875,7 @@ func modifyTaskParamLoop(
 	taskManager storage.Manager,
 	done chan struct{},
 	jobID, taskID int64,
-	lastConcurrency, lastBatchSize, lastMaxWriteSpeed int,
+	lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed int,
 ) {
 	logger := logutil.DDLLogger().With(zap.Int64("jobID", jobID), zap.Int64("taskID", taskID))
 	ticker := time.NewTicker(UpdateDDLJobReorgCfgInterval)
@@ -2899,15 +2899,15 @@ func modifyTaskParamLoop(
 
 		modifies := make([]proto.Modification, 0, 3)
 		workerCntLimit := latestJob.ReorgMeta.GetConcurrency()
-		concurrency, err := adjustConcurrency(ctx, taskManager, workerCntLimit)
+		requiredSlots, err := adjustConcurrency(ctx, taskManager, workerCntLimit)
 		if err != nil {
-			logger.Error("adjust concurrency failed", zap.Error(err))
+			logger.Error("adjust required slots failed", zap.Error(err))
 			continue
 		}
-		if concurrency != lastConcurrency {
+		if requiredSlots != lastRequiredSlots {
 			modifies = append(modifies, proto.Modification{
 				Type: proto.ModifyRequiredSlots,
-				To:   int64(concurrency),
+				To:   int64(requiredSlots),
 			})
 		}
 		batchSize := latestJob.ReorgMeta.GetBatchSize()
@@ -2950,12 +2950,12 @@ func modifyTaskParamLoop(
 			continue
 		}
 		logger.Info("modify task success",
-			zap.Int("oldConcurrency", lastConcurrency), zap.Int("newConcurrency", concurrency),
+			zap.Int("oldRequiredSlots", lastRequiredSlots), zap.Int("newRequiredSlots", requiredSlots),
 			zap.Int("oldBatchSize", lastBatchSize), zap.Int("newBatchSize", batchSize),
 			zap.String("oldMaxWriteSpeed", units.HumanSize(float64(lastMaxWriteSpeed))),
 			zap.String("newMaxWriteSpeed", units.HumanSize(float64(maxWriteSpeed))),
 		)
-		lastConcurrency = concurrency
+		lastRequiredSlots = requiredSlots
 		lastBatchSize = batchSize
 		lastMaxWriteSpeed = maxWriteSpeed
 	}
