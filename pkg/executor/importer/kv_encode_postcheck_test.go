@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/pingcap/tidb/pkg/lightning/mydump"
+	"github.com/pingcap/tidb/pkg/parser/charset"
 	"github.com/pingcap/tidb/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -28,11 +29,14 @@ func TestParquetStringLengthPostCheck(t *testing.T) {
 		TargetFlen:   3,
 	}
 
-	require.True(t, passStringLengthPostCheck(types.NewStringDatum("abc"), info))
-	require.False(t, passStringLengthPostCheck(types.NewStringDatum("abcd"), info))
-	require.True(t, passStringLengthPostCheck(types.NewStringDatum("中a"), info))
-	require.True(t, passStringLengthPostCheck(types.NewStringDatum("中中文"), info))
-	require.False(t, passStringLengthPostCheck(types.NewStringDatum("中中文a"), info))
+	require.True(t, passStringLengthPostCheck(types.NewStringDatum("abc"), info, charset.EncodingUTF8Impl))
+	require.False(t, passStringLengthPostCheck(types.NewStringDatum("abcd"), info, charset.EncodingUTF8Impl))
+	require.True(t, passStringLengthPostCheck(types.NewStringDatum("中a"), info, charset.EncodingUTF8Impl))
+	require.True(t, passStringLengthPostCheck(types.NewStringDatum("中中文"), info, charset.EncodingUTF8Impl))
+	require.False(t, passStringLengthPostCheck(types.NewStringDatum("中中文a"), info, charset.EncodingUTF8Impl))
+
+	require.False(t, passStringLengthPostCheck(types.NewBytesDatum([]byte{0xff}), info, charset.EncodingUTF8Impl))
+	require.True(t, passStringLengthPostCheck(types.NewBytesDatum([]byte{0xff}), info, nil))
 }
 
 func TestParquetDecimalPostCheck(t *testing.T) {

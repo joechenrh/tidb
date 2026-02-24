@@ -27,6 +27,7 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/mydump"
 	"github.com/pingcap/tidb/pkg/meta/autoid"
 	"github.com/pingcap/tidb/pkg/meta/model"
+	"github.com/pingcap/tidb/pkg/parser/charset"
 	"github.com/pingcap/tidb/pkg/parser/mysql" //nolint: goimports
 	"github.com/pingcap/tidb/pkg/table"
 	"github.com/pingcap/tidb/pkg/types"
@@ -49,6 +50,7 @@ type TableKVEncoder struct {
 	hasValueCache        []bool
 
 	insertColumnSkipCastInfos []mydump.ColumnSkipCastInfo
+	stringSkipCastEncoding    charset.Encoding
 }
 
 // NewTableKVEncoder creates a new TableKVEncoder.
@@ -91,6 +93,7 @@ func newTableKVEncoderInner(
 		insertColumns:     insertColumns,
 	}
 	encoder.initFillRowColumnMetadata()
+	encoder.initStringSkipCastEncoding()
 	return encoder, nil
 }
 
@@ -105,6 +108,18 @@ func (en *TableKVEncoder) initFillRowColumnMetadata() {
 			en.normalColIdxs = append(en.normalColIdxs, i)
 		}
 	}
+}
+
+func (en *TableKVEncoder) initStringSkipCastEncoding() {
+	// Parquet string skip-cast is only for UTF-8 targets.
+	typeCtx := en.SessionCtx.GetExprCtx().GetEvalCtx().TypeCtx()
+	flags := typeCtx.Flags()
+	enc := charset.FindEncoding(charset.CharsetUTF8MB4)
+	if enc.Tp() == charset.EncodingTpUTF8 && flags.SkipUTF8Check() {
+		en.stringSkipCastEncoding = nil
+		return
+	}
+	en.stringSkipCastEncoding = enc
 }
 
 // SetSkipCastInfos sets per-input-column precheck results.
@@ -146,7 +161,7 @@ func (en *TableKVEncoder) canSkipCastColumnValue(idx int, val types.Datum) bool 
 	case mydump.CastingCheckSkip:
 		return true
 	case mydump.CastingCheckStringLength:
-		return passStringLengthPostCheck(val, info)
+		return passStringLengthPostCheck(val, info, en.stringSkipCastEncoding)
 	case mydump.CastingCheckDecimal:
 		return passDecimalPostCheck(val, info)
 	default:
@@ -154,14 +169,17 @@ func (en *TableKVEncoder) canSkipCastColumnValue(idx int, val types.Datum) bool 
 	}
 }
 
-func passStringLengthPostCheck(val types.Datum, info mydump.ColumnSkipCastInfo) bool {
+func passStringLengthPostCheck(val types.Datum, info mydump.ColumnSkipCastInfo, enc charset.Encoding) bool {
 	if val.Kind() != types.KindString && val.Kind() != types.KindBytes {
+		return false
+	}
+	b := val.GetBytes()
+	if enc != nil && !enc.IsValid(b) {
 		return false
 	}
 	if info.TargetFlen < 0 {
 		return true
 	}
-	b := val.GetBytes()
 	if len(b) <= info.TargetFlen {
 		return true
 	}
