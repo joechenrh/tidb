@@ -69,7 +69,7 @@ func getReadRangeFromProps(
 	jobKeys [][]byte,
 	paths []string,
 	exStorage storeapi.Storage,
-) (_ [][]uint64, err error) {
+) (_ [][2][]uint64, err error) {
 	logger := logutil.Logger(ctx)
 	task := log.BeginTask(logger, "seek props offsets")
 	defer func() {
@@ -81,12 +81,12 @@ func getReadRangeFromProps(
 		starts[i] = kv.Key(jobKeys[i])
 	}
 	if len(starts) == 0 {
-		return [][]uint64{}, nil
+		return [][2][]uint64{}, nil
 	}
 
-	readRangesPerKey := make([][]uint64, len(starts))
-	for i := range starts {
-		readRangesPerKey[i] = make([]uint64, len(paths))
+	offsetsPerFile := make([][][2]uint64, len(paths))
+	for i := range offsetsPerFile {
+		offsetsPerFile[i] = make([][2]uint64, len(starts))
 	}
 
 	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
@@ -114,9 +114,9 @@ func getReadRangeFromProps(
 				if err3 != nil {
 					if goerrors.Is(err3, io.EOF) {
 						// fill the rest of the offsets with the last offset
-						off := readRangesPerKey[keyIdx][i]
+						off := offsetsPerFile[i][keyIdx]
 						for keyIdx++; keyIdx < len(starts); keyIdx++ {
-							readRangesPerKey[keyIdx][i] = off
+							offsetsPerFile[i][keyIdx] = off
 						}
 						return nil
 					}
@@ -127,10 +127,10 @@ func getReadRangeFromProps(
 					if keyIdx >= len(starts) {
 						return nil
 					}
-					readRangesPerKey[keyIdx][i] = readRangesPerKey[keyIdx-1][i]
+					offsetsPerFile[i][keyIdx] = offsetsPerFile[i][keyIdx-1]
 					curKey = starts[keyIdx]
 				}
-				readRangesPerKey[keyIdx][i] = p.offset
+				offsetsPerFile[i][keyIdx] = [2]uint64{p.offset, p.offset + p.totalSize()}
 				p, err3 = r.nextProp()
 				if err3 == nil {
 					firstKey = kv.Key(p.firstKey)
@@ -141,6 +141,16 @@ func getReadRangeFromProps(
 
 	if err = eg.Wait(); err != nil {
 		return nil, err
+	}
+
+	readRangesPerKey := make([][2][]uint64, len(starts))
+	for i := range starts {
+		readRangesPerKey[i][0] = make([]uint64, len(paths))
+		readRangesPerKey[i][1] = make([]uint64, len(paths))
+		for j := range paths {
+			readRangesPerKey[i][0][j] = offsetsPerFile[j][i][0]
+			readRangesPerKey[i][1][j] = offsetsPerFile[j][i][1]
+		}
 	}
 	return readRangesPerKey, nil
 }
