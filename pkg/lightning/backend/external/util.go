@@ -46,6 +46,13 @@ const (
 	metaName = "meta.json"
 )
 
+var (
+	// getReadRangeFromPropsConcurrency limits the number of stats files scanned in
+	// parallel to avoid unbounded object-storage reads. Keep it aligned with the
+	// package-wide concurrent-read budget.
+	getReadRangeFromPropsConcurrency = concurrentReaderTotalConcurrency
+)
+
 // getReadRangeFromProps reads the statistic files to find the largest offset of
 // corresponding sorted data file such that the key at offset is less than or
 // equal to the given start keys. These returned offsets can be used to seek data
@@ -53,7 +60,7 @@ const (
 // data.
 //
 // Caller can specify multiple ascending keys and getReadRangeFromProps will return
-// the offsets list per file for each key.
+// the offsets list per file for each key. Empty jobKeys returns an empty result.
 func getReadRangeFromProps(
 	ctx context.Context,
 	jobKeys [][]byte,
@@ -70,6 +77,9 @@ func getReadRangeFromProps(
 	for i := range jobKeys {
 		starts[i] = kv.Key(jobKeys[i])
 	}
+	if len(starts) == 0 {
+		return [][2][]uint64{}, nil
+	}
 
 	readRangesPerKey := make([][2][]uint64, len(starts))
 	for i := range starts {
@@ -78,6 +88,7 @@ func getReadRangeFromProps(
 	}
 
 	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
+	eg.SetLimit(getReadRangeFromPropsConcurrency)
 	for i := range paths {
 		eg.Go(func() error {
 			r, err2 := newStatsReader(egCtx, exStorage, paths[i], 250*1024)

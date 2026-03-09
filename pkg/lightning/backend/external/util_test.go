@@ -19,12 +19,50 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pingcap/tidb/pkg/ingestor/engineapi"
 	"github.com/pingcap/tidb/pkg/objstore"
+	"github.com/pingcap/tidb/pkg/objstore/objectio"
+	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 	"github.com/stretchr/testify/require"
 )
+
+type blockingOpenMemStorage struct {
+	*objstore.MemStorage
+	releaseCh chan struct{}
+	startedCh chan struct{}
+	current   atomic.Int32
+	max       atomic.Int32
+}
+
+func (s *blockingOpenMemStorage) Open(
+	ctx context.Context,
+	path string,
+	o *storeapi.ReaderOption,
+) (objectio.Reader, error) {
+	cur := s.current.Add(1)
+	for {
+		oldMax := s.max.Load()
+		if cur <= oldMax || s.max.CompareAndSwap(oldMax, cur) {
+			break
+		}
+	}
+	select {
+	case s.startedCh <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.releaseCh:
+	case <-ctx.Done():
+		s.current.Add(-1)
+		return nil, ctx.Err()
+	}
+	s.current.Add(-1)
+	return s.MemStorage.Open(ctx, path, o)
+}
 
 func TestGetReadRangeFromProps(t *testing.T) {
 	ctx := context.Background()
@@ -128,6 +166,72 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, []string{file1, file2, file3}, store)
 	require.NoError(t, err)
 	require.Equal(t, [2][]uint64{{30, 20, 0}, {30 + ts, 20 + ts, 0}}, got[0])
+}
+
+func TestGetReadRangeFromPropsEmptyJobKeys(t *testing.T) {
+	ctx := context.Background()
+	store := objstore.NewMemStorage()
+
+	writer, err := store.Create(ctx, "/test-empty-job-keys", nil)
+	require.NoError(t, err)
+	_, err = writer.Write(ctx, (&rangePropertiesCollector{
+		props: []*rangeProperty{{firstKey: []byte("key1"), offset: 10, size: 10, keys: 1}},
+	}).encode())
+	require.NoError(t, err)
+	err = writer.Close(ctx)
+	require.NoError(t, err)
+
+	got, err := getReadRangeFromProps(ctx, nil, []string{"/test-empty-job-keys"}, store)
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestGetReadRangeFromPropsLimitsParallelRead(t *testing.T) {
+	backup := getReadRangeFromPropsConcurrency
+	getReadRangeFromPropsConcurrency = 2
+	defer func() {
+		getReadRangeFromPropsConcurrency = backup
+	}()
+
+	ctx := context.Background()
+	store := &blockingOpenMemStorage{
+		MemStorage: objstore.NewMemStorage(),
+		releaseCh:  make(chan struct{}),
+		startedCh:  make(chan struct{}, 16),
+	}
+
+	paths := make([]string, 5)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("/test-open-limit-%d", i)
+		writer, err := store.Create(ctx, paths[i], nil)
+		require.NoError(t, err)
+		_, err = writer.Write(ctx, (&rangePropertiesCollector{
+			props: []*rangeProperty{{firstKey: []byte("key1"), offset: 10, size: 10, keys: 1}},
+		}).encode())
+		require.NoError(t, err)
+		err = writer.Close(ctx)
+		require.NoError(t, err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, paths, store)
+		errCh <- err
+	}()
+
+	for range 2 {
+		select {
+		case <-store.startedCh:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for limited parallel reads to start")
+		}
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	require.EqualValues(t, 2, store.max.Load())
+
+	close(store.releaseCh)
+	require.NoError(t, <-errCh)
 }
 
 func TestGetAllFileNames(t *testing.T) {
