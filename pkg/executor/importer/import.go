@@ -1389,21 +1389,20 @@ func (e *LoadDataController) InitDataFiles(ctx context.Context) error {
 		}
 
 		if !filepath.IsAbs(e.Path) {
-			return exeerrors.ErrLoadDataInvalidURI.GenWithStackByArgs(plannercore.ImportIntoDataSource,
+			return exeerrors.ErrLoadDataInvalidFilePath.GenWithStackByArgs(e.Path,
 				"file location should be absolute path when import from server disk")
 		}
 		// we add this check for security, we don't want user import any sensitive system files,
 		// most of which is readable text file and don't have a suffix, such as /etc/passwd
 		if !slices.Contains(supportedSuffixForServerDisk, strings.ToLower(filepath.Ext(e.Path))) {
-			return exeerrors.ErrLoadDataInvalidURI.GenWithStackByArgs(plannercore.ImportIntoDataSource,
+			return exeerrors.ErrLoadDataInvalidFilePath.GenWithStackByArgs(e.Path,
 				"the file suffix is not supported when import from server disk")
 		}
 		dir := filepath.Dir(e.Path)
 		_, err := os.Stat(dir)
 		if err != nil {
 			// permission denied / file not exist error, etc.
-			return exeerrors.ErrLoadDataInvalidURI.GenWithStackByArgs(plannercore.ImportIntoDataSource,
-				err.Error())
+			return exeerrors.ErrLoadDataInvalidFilePath.GenWithStackByArgs(dir, err.Error())
 		}
 
 		fileNameKey = filepath.Base(e.Path)
@@ -1413,8 +1412,7 @@ func (e *LoadDataController) InitDataFiles(ctx context.Context) error {
 	// try to find pattern error in advance
 	_, err2 = filepath.Match(stringutil.EscapeGlobQuestionMark(fileNameKey), "")
 	if err2 != nil {
-		return exeerrors.ErrLoadDataInvalidURI.GenWithStackByArgs(plannercore.ImportIntoDataSource,
-			"Glob pattern error: "+err2.Error())
+		return exeerrors.ErrLoadDataGlobPatternInvalid.GenWithStackByArgs(e.Path, err2.Error())
 	}
 
 	if err2 = e.InitDataStore(ctx); err2 != nil {
@@ -1436,7 +1434,7 @@ func (e *LoadDataController) InitDataFiles(ctx context.Context) error {
 	if idx == -1 {
 		fileReader, err2 := s.Open(ctx, fileNameKey, nil)
 		if err2 != nil {
-			return exeerrors.ErrLoadDataCantRead.GenWithStackByArgs(errors.GetErrStackMsg(err2), "Please check the file location is correct")
+			return exeerrors.ErrLoadDataFileOpenFailed.GenWithStackByArgs(fileNameKey, errors.GetErrStackMsg(err2))
 		}
 		defer func() {
 			terror.Log(fileReader.Close())
@@ -1479,7 +1477,7 @@ func (e *LoadDataController) InitDataFiles(ctx context.Context) error {
 				allFiles = append(allFiles, mydump.RawFile{Path: remotePath, Size: size})
 				return nil
 			}); err != nil {
-			return exeerrors.ErrLoadDataCantRead.GenWithStackByArgs(errors.GetErrStackMsg(err), "failed to walk dir")
+			return exeerrors.ErrLoadDataDirWalkFailed.GenWithStackByArgs(errors.GetErrStackMsg(err))
 		}
 
 		var err error
@@ -1641,7 +1639,7 @@ func (e *LoadDataController) GetLoadDataReaderInfos() []LoadDataReaderInfo {
 			Opener: func(ctx context.Context) (io.ReadSeekCloser, error) {
 				fileReader, err2 := mydump.OpenReader(ctx, f, e.dataStore, compressedio.DecompressConfig{})
 				if err2 != nil {
-					return nil, exeerrors.ErrLoadDataCantRead.GenWithStackByArgs(errors.GetErrStackMsg(err2), "Please check the INFILE path is correct")
+					return nil, exeerrors.ErrLoadDataFileOpenFailed.GenWithStackByArgs(f.Path, errors.GetErrStackMsg(err2))
 				}
 				return fileReader, nil
 			},
