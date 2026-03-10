@@ -96,7 +96,7 @@ func TestVerifyChecksum(t *testing.T) {
 	require.Equal(t, backupDistScanCon, tk.Session().GetSessionVars().DistSQLScanConcurrency())
 	localChecksum = verify.MakeKVChecksum(1, 2, 1)
 	err = importer.VerifyChecksum(ctx, plan, localChecksum, logutil.BgLogger(), getRemoteChecksumFn)
-	require.ErrorIs(t, err, common.ErrChecksumMismatch)
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataChecksumMismatch)
 
 	// check a slow checksum can be canceled
 	plan2 := &importer.Plan{
@@ -236,7 +236,7 @@ func TestPostProcess(t *testing.T) {
 	// verify checksum failed
 	localChecksum := verify.NewKVGroupChecksumForAdd()
 	localChecksum.AddRawGroup(verify.DataKVGroupID, 1, 2, 1)
-	require.ErrorIs(t, importer.PostProcess(ctx, tk.Session(), nil, plan, localChecksum, logger), common.ErrChecksumMismatch)
+	require.ErrorIs(t, importer.PostProcess(ctx, tk.Session(), nil, plan, localChecksum, logger), exeerrors.ErrLoadDataChecksumMismatch)
 	// success
 	localChecksum = verify.NewKVGroupChecksumForAdd()
 	localChecksum.AddRawGroup(verify.DataKVGroupID, 1, 1, 1)

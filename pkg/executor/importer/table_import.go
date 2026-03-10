@@ -40,6 +40,7 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/backend/local"
 	"github.com/pingcap/tidb/pkg/lightning/checkpoints"
 	"github.com/pingcap/tidb/pkg/lightning/common"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/pingcap/tidb/pkg/lightning/config"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/lightning/metric"
@@ -902,10 +903,8 @@ func VerifyChecksum(ctx context.Context, plan *Plan, localChecksum verify.KVChec
 	}
 	if remoteChecksum != nil {
 		if !remoteChecksum.IsEqual(&localChecksum) {
-			err2 := common.ErrChecksumMismatch.GenWithStackByArgs(
-				remoteChecksum.Checksum, localChecksum.Sum(),
-				remoteChecksum.TotalKVs, localChecksum.SumKVS(),
-				remoteChecksum.TotalBytes, localChecksum.SumSize(),
+			err2 := exeerrors.ErrLoadDataChecksumMismatch.GenWithStackByArgs(
+				common.UniqueTable(plan.DBName, plan.TableInfo.Name.L),
 			)
 			if plan.Checksum == config.OpLevelOptional {
 				logger.Warn("verify checksum failed, but checksum is optional, will skip it", zap.Error(err2))
