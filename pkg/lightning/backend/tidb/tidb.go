@@ -43,6 +43,7 @@ import (
 	"github.com/pingcap/tidb/pkg/table"
 	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tidb/pkg/util"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/pingcap/tidb/pkg/util/dbutil"
 	"github.com/pingcap/tidb/pkg/util/hack"
 	"github.com/pingcap/tidb/pkg/util/kvcache"
@@ -606,7 +607,7 @@ func (enc *tidbEncoder) Encode(row []types.Datum, _ int64, columnPermutation []i
 		// there are enc.columnCnt elements to insert but fewer columns in row
 		enc.logger.Error("column count mismatch", zap.Ints("column_permutation", columnPermutation),
 			zap.Array("data", kv.RowArrayMarshaller(row)))
-		return emptyTiDBRow, errors.Errorf("column count mismatch, expected %d, got %d", enc.columnCnt, len(row))
+		return emptyTiDBRow, exeerrors.ErrLoadDataColumnCountMismatch.FastGenByArgs("unknown", enc.columnCnt, len(row))
 	}
 
 	if len(row) > len(enc.columnIdx) {
@@ -614,7 +615,7 @@ func (enc *tidbEncoder) Encode(row []types.Datum, _ int64, columnPermutation []i
 		// in the table
 		enc.logger.Error("column count mismatch", zap.Ints("column_count", enc.columnIdx),
 			zap.Array("data", kv.RowArrayMarshaller(row)))
-		return emptyTiDBRow, errors.Errorf("column count mismatch, at most %d but got %d", len(enc.columnIdx), len(row))
+		return emptyTiDBRow, exeerrors.ErrLoadDataColumnCountMismatch.FastGenByArgs("unknown", len(enc.columnIdx), len(row))
 	}
 
 	var encoded, preparedInsertStmt strings.Builder
