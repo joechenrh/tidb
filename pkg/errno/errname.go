@@ -1076,7 +1076,6 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrLoadDataJobNotFound:              mysql.Message("Job ID %d doesn't exist", nil),
 	ErrLoadDataInvalidOperation:         mysql.Message("The current job status cannot perform the operation. %s", nil),
 	ErrLoadDataLocalUnsupportedOption:   mysql.Message("Unsupported option for LOAD DATA LOCAL INFILE: %s", nil),
-	ErrLoadDataPreCheckFailed:           mysql.Message("PreCheck failed: %s", nil),
 	ErrLoadDataActiveJobExists:         mysql.Message("An active IMPORT INTO job on table '%s.%s' already exists. Cancel or wait for the existing job before starting a new one.", nil),
 	ErrLoadDataNoFilesMatched:          mysql.Message("No data files found matching path '%s'. Verify the path, glob pattern, and that files are not empty.", nil),
 	ErrLoadDataTargetTableNotEmpty:     mysql.Message("Target table '%s.%s' is not empty. Truncate the table or set a different ON DUPLICATE KEY strategy.", nil),

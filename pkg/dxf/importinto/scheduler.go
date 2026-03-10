@@ -280,7 +280,7 @@ func (sch *importScheduler) checkImportTableEmpty(ctx context.Context, taskMeta 
 			return err2
 		}
 		if !isEmpty {
-			return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs("target table is not empty")
+			return exeerrors.ErrLoadDataTargetTableNotEmpty.FastGenByArgs()
 		}
 		return nil
 	})

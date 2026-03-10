@@ -43,11 +43,11 @@ func (s *mockGCSSuite) TestPreCheckTotalFileSize0() {
 	s.tk.MustExec("insert into t values(9, 'test9', 99);")
 	sql := fmt.Sprintf(`IMPORT INTO t FROM 'gs://precheck-file-empty/non-exist/file-*.csv?endpoint=%s'`, gcsEndpoint)
 	err := s.tk.QueryToErr(sql)
-	require.ErrorIs(s.T(), err, exeerrors.ErrLoadDataPreCheckFailed)
+	require.ErrorIs(s.T(), err, exeerrors.ErrLoadDataNoFilesMatched)
 
 	sql = fmt.Sprintf(`IMPORT INTO t FROM 'gs://precheck-file-empty/empty.csv?endpoint=%s'`, gcsEndpoint)
 	err = s.tk.QueryToErr(sql)
-	require.ErrorIs(s.T(), err, exeerrors.ErrLoadDataPreCheckFailed)
+	require.ErrorIs(s.T(), err, exeerrors.ErrLoadDataNoFilesMatched)
 }
 
 func (s *mockGCSSuite) TestPreCheckTableNotEmpty() {
@@ -66,7 +66,7 @@ func (s *mockGCSSuite) TestPreCheckTableNotEmpty() {
 	s.tk.MustExec("insert into t values(9, 'test9', 99);")
 	sql := fmt.Sprintf(`IMPORT INTO t FROM 'gs://precheck-tbl-empty/file.csv?endpoint=%s'`, gcsEndpoint)
 	err := s.tk.QueryToErr(sql)
-	require.ErrorIs(s.T(), err, exeerrors.ErrLoadDataPreCheckFailed)
+	require.ErrorIs(s.T(), err, exeerrors.ErrLoadDataTargetTableNotEmpty)
 }
 
 func (s *mockGCSSuite) TestPreCheckCDCPiTRTasks() {
@@ -101,7 +101,7 @@ func (s *mockGCSSuite) TestPreCheckCDCPiTRTasks() {
 	sql := fmt.Sprintf(`IMPORT INTO t FROM 'gs://precheck-cdc-pitr/file.csv?endpoint=%s'`, gcsEndpoint)
 	err = s.tk.QueryToErr(sql)
 	log.Error("error", zap.Error(err))
-	s.ErrorIs(err, exeerrors.ErrLoadDataPreCheckFailed)
+	s.ErrorIs(err, exeerrors.ErrLoadDataPiTRRunning)
 	s.ErrorContains(err, "found PiTR log streaming task(s): [dummy-task],")
 	// disable precheck
 	s.tk.MustQuery(sql + " WITH disable_precheck")
@@ -110,7 +110,7 @@ func (s *mockGCSSuite) TestPreCheckCDCPiTRTasks() {
 	// test import from select
 	err = s.tk.ExecToErr("import into dst from select * from t")
 	log.Error("error", zap.Error(err))
-	s.ErrorIs(err, exeerrors.ErrLoadDataPreCheckFailed)
+	s.ErrorIs(err, exeerrors.ErrLoadDataPiTRRunning)
 	s.ErrorContains(err, "found PiTR log streaming task(s): [dummy-task],")
 	// disable precheck
 	s.tk.MustExec("import into dst from select * from t with disable_precheck")
@@ -127,6 +127,6 @@ func (s *mockGCSSuite) TestPreCheckCDCPiTRTasks() {
 	})
 	s.tk.MustExec("truncate table t")
 	err = s.tk.QueryToErr(sql)
-	s.ErrorIs(err, exeerrors.ErrLoadDataPreCheckFailed)
+	s.ErrorIs(err, exeerrors.ErrLoadDataCDCRunning)
 	s.ErrorContains(err, "found CDC changefeed(s): cluster/namespace: cluster-123/test changefeed(s): [feed-test]")
 }
