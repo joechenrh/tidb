@@ -447,27 +447,27 @@ func TestSupportedSuffixForServerDisk(t *testing.T) {
 	// non-exist parent directory
 	c.Path = "/path/to/non/exists/file.csv"
 	err = c.InitDataFiles(ctx)
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataInvalidURI)
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataInvalidFilePath)
 	require.ErrorContains(t, err, "no such file or directory")
 	// without permission to parent dir
 	c.Path = path.Join(tempDir, "no-perm", "no-perm.csv")
 	err = c.InitDataFiles(ctx)
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataCantRead)
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataInvalidFilePath)
 	require.ErrorContains(t, err, "permission denied")
 	// file not exists
 	c.Path = path.Join(tempDir, "not-exists.csv")
 	err = c.InitDataFiles(ctx)
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataCantRead)
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataFileOpenFailed)
 	require.ErrorContains(t, err, "no such file or directory")
 	// file without permission
 	c.Path = path.Join(tempDir, "no-perm.csv")
 	err = c.InitDataFiles(ctx)
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataCantRead)
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataFileOpenFailed)
 	require.ErrorContains(t, err, "permission denied")
 	// we don't have read access to 'no-perm' directory, so walk-dir fails
 	c.Path = path.Join(tempDir, "server-*.csv")
 	err = c.InitDataFiles(ctx)
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataCantRead)
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataDirWalkFailed)
 	require.ErrorContains(t, err, "permission denied")
 	// grant read access to 'no-perm' directory, should ok now.
 	require.NoError(t, os.Chmod(path.Join(tempDir, "no-perm"), 0o400))

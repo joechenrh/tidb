@@ -1067,7 +1067,7 @@ const (
 	ErrUnsupportedTTLReferencedByFK        = 8152
 	ErrUnsupportedPrimaryKeyTypeWithTTL    = 8153
 	ErrLoadDataFromServerDisk              = 8154
-	ErrLoadParquetFromLocal                = 8155
+
 	ErrLoadDataEmptyPath                   = 8156
 	ErrLoadDataUnsupportedFormat           = 8157
 	ErrLoadDataInvalidURI                  = 8158
@@ -1081,7 +1081,7 @@ const (
 	ErrLoadDataDuplicateKeyConflict        = 8167
 	ErrLoadDataJobNotFound                 = 8170
 	ErrLoadDataInvalidOperation            = 8171
-	ErrLoadDataLocalUnsupportedOption      = 8172
+
 	ErrBRJobNotFound                       = 8174
 	ErrMemoryExceedForQuery                = 8175
 	ErrMemoryExceedForInstance             = 8176

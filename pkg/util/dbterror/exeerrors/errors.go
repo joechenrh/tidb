@@ -87,7 +87,6 @@ var (
 	ErrWarnTooFewRecords              = dbterror.ClassExecutor.NewStd(mysql.ErrWarnTooFewRecords)
 	ErrWarnTooManyRecords             = dbterror.ClassExecutor.NewStd(mysql.ErrWarnTooManyRecords)
 	ErrLoadDataFromServerDisk         = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataFromServerDisk)
-	ErrLoadParquetFromLocal           = dbterror.ClassExecutor.NewStd(mysql.ErrLoadParquetFromLocal)
 	ErrLoadDataEmptyPath              = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataEmptyPath)
 	ErrLoadDataUnsupportedFormat      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataUnsupportedFormat)
 	ErrLoadDataInvalidURI             = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataInvalidURI)
@@ -101,7 +100,7 @@ var (
 	ErrLoadDataDuplicateKeyConflict   = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataDuplicateKeyConflict)
 	ErrLoadDataJobNotFound            = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataJobNotFound)
 	ErrLoadDataInvalidOperation       = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataInvalidOperation)
-	ErrLoadDataLocalUnsupportedOption = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataLocalUnsupportedOption)
+
 
 
 	// IMPORT INTO granular errors: pre-check phase
