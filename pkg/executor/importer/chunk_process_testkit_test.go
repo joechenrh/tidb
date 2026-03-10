@@ -31,6 +31,7 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/backend/kv"
 	"github.com/pingcap/tidb/pkg/lightning/checkpoints"
 	"github.com/pingcap/tidb/pkg/lightning/common"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/pingcap/tidb/pkg/lightning/config"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/lightning/metric"
@@ -189,7 +190,7 @@ func TestFileChunkProcess(t *testing.T) {
 			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil,
 		)
 		err2 := processor.Process(ctx)
-		require.ErrorIs(t, err2, common.ErrEncodeKV)
+		require.ErrorIs(t, err2, exeerrors.ErrLoadDataEncodeKVFailed)
 		require.ErrorContains(t, err2, "encoding 2-th data row in this chunk")
 		require.ErrorContains(t, err2, "at offset 6")
 		require.True(t, ctrl.Satisfied())
@@ -216,7 +217,7 @@ func TestFileChunkProcess(t *testing.T) {
 			csvParser, encoder, nil,
 			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil,
 		)
-		require.ErrorIs(t, processor.Process(ctx), common.ErrEncodeKV)
+		require.ErrorIs(t, processor.Process(ctx), exeerrors.ErrLoadDataCSVSyntaxError)
 		require.True(t, ctrl.Satisfied())
 	})
 

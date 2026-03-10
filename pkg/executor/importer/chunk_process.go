@@ -17,6 +17,7 @@ package importer
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/docker/go-units"
@@ -36,6 +37,7 @@ import (
 	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/chunk"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/pingcap/tidb/pkg/util/syncutil"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -71,6 +73,20 @@ type rowToEncode struct {
 
 type encodeReaderFn func(ctx context.Context, row []types.Datum) (data rowToEncode, closed bool, err error)
 
+// classifyReadError wraps a ReadRow/encode error with the appropriate granular error code.
+// CSV and SQL parsers both produce "syntax error: ..." messages.
+func classifyReadError(err error, filename string, offset int64) error {
+	errMsg := err.Error()
+	switch {
+	case strings.HasPrefix(errMsg, "syntax error:"):
+		return exeerrors.ErrLoadDataCSVSyntaxError.GenWithStackByArgs(filename, offset, errMsg)
+	case strings.Contains(errMsg, "size limit") || strings.Contains(errMsg, "entry too large"):
+		return exeerrors.ErrLoadDataRowSizeTooLarge.GenWithStackByArgs(filename, offset)
+	default:
+		return exeerrors.ErrLoadDataEncodeKVFailed.Wrap(err).GenWithStackByArgs(filename, offset, errMsg)
+	}
+}
+
 // parserEncodeReader wraps a mydump.Parser as a encodeReaderFn.
 func parserEncodeReader(parser mydump.Parser, endOffset int64, filename string) encodeReaderFn {
 	return func(context.Context, []types.Datum) (data rowToEncode, closed bool, err error) {
@@ -89,7 +105,7 @@ func parserEncodeReader(parser mydump.Parser, endOffset int64, filename string) 
 			err = nil
 			return
 		default:
-			err = common.ErrEncodeKV.Wrap(err).GenWithStackByArgs(filename, readPos)
+			err = classifyReadError(err, filename, readPos)
 			return
 		}
 		lastRow := parser.LastRow()
@@ -356,7 +372,7 @@ func (p *chunkEncoder) encodeLoop(ctx context.Context) error {
 		currOffset = data.endOffset
 		data.resetFn()
 		if encodeErr != nil {
-			err2 := common.ErrEncodeKV.Wrap(encodeErr).GenWithStackByArgs(p.chunkName, data.startPos)
+			err2 := classifyReadError(encodeErr, p.chunkName, data.startPos)
 			return errors.Annotatef(err2, "when encoding %d-th data row in this chunk", rowNumber)
 		}
 		encodeDur += time.Since(encodeDurStart)
