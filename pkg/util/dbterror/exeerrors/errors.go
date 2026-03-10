@@ -103,4 +103,36 @@ var (
 	ErrLoadDataInvalidOperation       = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataInvalidOperation)
 	ErrLoadDataLocalUnsupportedOption = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataLocalUnsupportedOption)
 	ErrLoadDataPreCheckFailed         = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataPreCheckFailed)
+
+	// IMPORT INTO granular errors: pre-check phase
+	ErrLoadDataActiveJobExists          = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataActiveJobExists)
+	ErrLoadDataNoFilesMatched           = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataNoFilesMatched)
+	ErrLoadDataTargetTableNotEmpty      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataTargetTableNotEmpty)
+	ErrLoadDataPiTRRunning              = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataPiTRRunning)
+	ErrLoadDataCDCRunning               = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataCDCRunning)
+	ErrLoadDataCloudStorageUnsupported  = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataCloudStorageUnsupported)
+	ErrLoadDataCloudStorageAccessDenied = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataCloudStorageAccessDenied)
+
+	// IMPORT INTO granular errors: file access phase
+	ErrLoadDataInvalidFilePath    = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataInvalidFilePath)
+	ErrLoadDataGlobPatternInvalid = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataGlobPatternInvalid)
+	ErrLoadDataFileOpenFailed     = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataFileOpenFailed)
+	ErrLoadDataDirWalkFailed      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataDirWalkFailed)
+
+	// IMPORT INTO granular errors: CSV/SQL parsing phase
+	ErrLoadDataCSVSyntaxError      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataCSVSyntaxError)
+	ErrLoadDataSQLSyntaxError      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataSQLSyntaxError)
+	ErrLoadDataRowSizeTooLarge     = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataRowSizeTooLarge)
+	ErrLoadDataColumnCountMismatch = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataColumnCountMismatch)
+
+	// IMPORT INTO granular errors: parquet parsing phase
+	ErrLoadDataParquetUnsupportedType = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataParquetUnsupportedType)
+	ErrLoadDataParquetReadFailed      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataParquetReadFailed)
+	ErrLoadDataParquetDecimalError    = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataParquetDecimalError)
+
+	// IMPORT INTO granular errors: post-processing / execution
+	ErrLoadDataUnknownColumns        = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataUnknownColumns)
+	ErrLoadDataChecksumMismatch      = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataChecksumMismatch)
+	ErrLoadDataEncodeKVFailed        = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataEncodeKVFailed)
+	ErrLoadDataParquetCompressedFile = dbterror.ClassExecutor.NewStd(mysql.ErrLoadDataParquetCompressedFile)
 )
