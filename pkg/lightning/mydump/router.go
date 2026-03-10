@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/config"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/objstore/compressedio"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/pingcap/tidb/pkg/util/filter"
 	"go.uber.org/zap"
 )
@@ -359,7 +360,7 @@ func (p regexRouterParser) Parse(r *config.FileRouteRule, logger log.Logger) (*R
 				return err
 			}
 			if result.Type == SourceTypeParquet && compression != CompressionNone {
-				return errors.Errorf("can't support whole compressed parquet file, should compress parquet files by choosing correct parquet compress writer, path: %s", r.Path)
+				return exeerrors.ErrLoadDataParquetCompressedFile.FastGenByArgs(r.Path)
 			}
 			result.Compression = compression
 			return nil
