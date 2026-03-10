@@ -54,7 +54,7 @@ func (e *LoadDataController) CheckRequirements(ctx context.Context, se sessionct
 			return errors.Trace(err)
 		}
 		if cnt > 0 {
-			return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs("there is active job on the target table already")
+			return exeerrors.ErrLoadDataActiveJobExists.FastGenByArgs(e.Plan.DBName, e.Plan.TableInfo.Name.O)
 		}
 		if err := e.checkTotalFileSize(); err != nil {
 			return err
@@ -79,7 +79,7 @@ func (e *LoadDataController) checkTotalFileSize() error {
 		// this happens when:
 		// 1. no file matched when using wildcard
 		// 2. all matched file is empty(with or without wildcard)
-		return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs("No file matched, or the file is empty. Please provide a valid file location.")
+		return exeerrors.ErrLoadDataNoFilesMatched.FastGenByArgs(e.Path)
 	}
 	return nil
 }
@@ -96,7 +96,7 @@ func (e *LoadDataController) checkTableEmpty(ctx context.Context, conn sqlexec.S
 		return err
 	}
 	if len(rows) > 0 {
-		return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs("target table is not empty")
+		return exeerrors.ErrLoadDataTargetTableNotEmpty.FastGenByArgs(e.DBName, e.Table.Meta().Name.O)
 	}
 	return nil
 }
@@ -118,7 +118,7 @@ func (*LoadDataController) checkCDCPiTRTasks(ctx context.Context, se sessionctx.
 		for _, task := range tasks {
 			names = append(names, task.Info.GetName())
 		}
-		return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs(fmt.Sprintf("found PiTR log streaming task(s): %v,", names))
+		return exeerrors.ErrLoadDataPiTRRunning.FastGenByArgs(fmt.Sprintf("%v", names))
 	}
 
 	nameSet, err := cdcutil.GetRunningChangefeeds(ctx, cli)
@@ -127,7 +127,7 @@ func (*LoadDataController) checkCDCPiTRTasks(ctx context.Context, se sessionctx.
 	}
 
 	if !nameSet.Empty() {
-		return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs(nameSet.MessageToUser())
+		return exeerrors.ErrLoadDataCDCRunning.FastGenByArgs(nameSet.MessageToUser())
 	}
 	return nil
 }
@@ -147,7 +147,7 @@ func (e *LoadDataController) checkGlobalSortStorePrivilege(ctx context.Context) 
 
 	if b.GetS3() == nil && b.GetGcs() == nil {
 		// we only support S3 now, but in test we are using GCS.
-		return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs("unsupported cloud storage uri scheme: " + cloudStorageURL.Scheme)
+		return exeerrors.ErrLoadDataCloudStorageUnsupported.FastGenByArgs(cloudStorageURL.Scheme)
 	}
 
 	opt := &storeapi.Options{
@@ -162,7 +162,7 @@ func (e *LoadDataController) checkGlobalSortStorePrivilege(ctx context.Context) 
 	}
 	_, err := objstore.New(ctx, b, opt)
 	if err != nil {
-		return exeerrors.ErrLoadDataPreCheckFailed.FastGenByArgs("check cloud storage uri access: " + err.Error())
+		return exeerrors.ErrLoadDataCloudStorageAccessDenied.FastGenByArgs(e.Plan.CloudStorageURI, err.Error())
 	}
 	return nil
 }

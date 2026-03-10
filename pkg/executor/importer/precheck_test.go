@@ -134,13 +134,13 @@ func TestCheckRequirements(t *testing.T) {
 	jobID, err := importer.CreateJob(ctx, conn, "test", "t", tableObj.Meta().ID, "root", "", &importer.ImportParameters{}, 0)
 	require.NoError(t, err)
 	err = c.CheckRequirements(ctx, tk.Session())
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataPreCheckFailed)
-	require.ErrorContains(t, err, "there is active job on the target table already")
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataActiveJobExists)
+	require.ErrorContains(t, err, "active IMPORT INTO job on table")
 	// cancel the job
 	require.NoError(t, importer.CancelJob(ctx, conn, jobID))
 
 	// source data file size = 0
-	require.ErrorIs(t, c.CheckRequirements(ctx, tk.Session()), exeerrors.ErrLoadDataPreCheckFailed)
+	require.ErrorIs(t, c.CheckRequirements(ctx, tk.Session()), exeerrors.ErrLoadDataNoFilesMatched)
 
 	// make checkTotalFileSize pass
 	c.TotalFileSize = 1
@@ -150,7 +150,7 @@ func TestCheckRequirements(t *testing.T) {
 	// non-empty table
 	_, err = conn.Execute(ctx, "insert into test.t values(1)")
 	require.NoError(t, err)
-	require.ErrorIs(t, c.CheckRequirements(ctx, tk.Session()), exeerrors.ErrLoadDataPreCheckFailed)
+	require.ErrorIs(t, c.CheckRequirements(ctx, tk.Session()), exeerrors.ErrLoadDataTargetTableNotEmpty)
 	// table not exists
 	_, err = conn.Execute(ctx, "drop table if exists test.t")
 	require.NoError(t, err)
@@ -194,8 +194,8 @@ func TestCheckRequirements(t *testing.T) {
 	_, err = etcdCli.Put(ctx, pitrKey, "")
 	require.NoError(t, err)
 	err = c.CheckRequirements(ctx, tk.Session())
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataPreCheckFailed)
-	require.ErrorContains(t, err, "found PiTR log streaming")
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataPiTRRunning)
+	require.ErrorContains(t, err, "PiTR log streaming")
 	// disable precheck, should pass
 	c.DisablePrecheck = true
 	require.NoError(t, c.CheckRequirements(ctx, tk.Session()))
@@ -209,8 +209,8 @@ func TestCheckRequirements(t *testing.T) {
 	_, err = etcdCli.Put(ctx, cdcKey, `{"state":"normal"}`)
 	require.NoError(t, err)
 	err = c.CheckRequirements(ctx, tk.Session())
-	require.ErrorIs(t, err, exeerrors.ErrLoadDataPreCheckFailed)
-	require.ErrorContains(t, err, "found CDC changefeed")
+	require.ErrorIs(t, err, exeerrors.ErrLoadDataCDCRunning)
+	require.ErrorContains(t, err, "CDC changefeed")
 
 	// remove CDC task, pass
 	_, err = etcdCli.Delete(ctx, cdcKey)
@@ -224,7 +224,7 @@ func TestCheckRequirements(t *testing.T) {
 	c.Plan.CloudStorageURI = "sdsdsdsd://sdsdsdsd"
 	require.ErrorIs(t, c.CheckRequirements(ctx, tk.Session()), exeerrors.ErrLoadDataInvalidURI)
 	c.Plan.CloudStorageURI = "local:///tmp"
-	require.ErrorContains(t, c.CheckRequirements(ctx, tk.Session()), "unsupported cloud storage uri scheme: local")
+	require.ErrorIs(t, c.CheckRequirements(ctx, tk.Session()), exeerrors.ErrLoadDataCloudStorageUnsupported)
 	// this mock cannot mock credential check, so we just skip it.
 	backend := s3mem.New()
 	faker := gofakes3.New(backend)
