@@ -20,9 +20,9 @@ import (
 
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/schema"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/types"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 )
 
 type setter[T parquet.ColumnTypes] func(T, *types.Datum) error
@@ -52,7 +52,7 @@ func initializeMyDecimal(d *types.Datum) *types.MyDecimal {
 func setDatumFromDecimalByte(d *types.Datum, val []byte, scale int) error {
 	// Typically it shouldn't happen.
 	if len(val) == 0 {
-		return errors.New("invalid parquet decimal byte array")
+		return exeerrors.ErrLoadDataParquetDecimalError.FastGenByArgs("unknown", "invalid decimal byte array: length is 0")
 	}
 
 	// Truncate leading zeros in two's complement representation.
