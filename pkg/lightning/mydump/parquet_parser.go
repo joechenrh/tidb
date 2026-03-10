@@ -31,6 +31,7 @@ import (
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tidb/pkg/util"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/pingcap/tidb/pkg/util/timeutil"
 	"github.com/pingcap/tidb/pkg/util/zeropool"
@@ -244,7 +245,7 @@ func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location) (e
 		tp := meta.Schema.Column(idx).PhysicalType()
 		iter := createColumnIterator(tp, &colTypes[idx], loc, readBatchSize)
 		if iter == nil {
-			return errors.Errorf("unsupported parquet type %s", tp.String())
+			return exeerrors.ErrLoadDataParquetUnsupportedType.FastGenByArgs(tp.String(), "unknown")
 		}
 
 		rowGroup := rgp.readers[idx].RowGroup(rgp.rowGroup)
@@ -270,7 +271,7 @@ func (rgp *rowGroupParser) readRow(row []types.Datum) error {
 
 	for col, iter := range rgp.iterators {
 		if err := iter.Next(&row[col]); err != nil {
-			return errors.Annotate(err, "parquet read column failed")
+			return exeerrors.ErrLoadDataParquetReadFailed.Wrap(err).GenWithStackByArgs("unknown", err.Error())
 		}
 	}
 	rgp.readRows++
@@ -606,7 +607,7 @@ func NewParquetParser(
 
 	reader, err := file.NewParquetReader(wrapper, file.WithReadProps(prop))
 	if err != nil {
-		return nil, errors.Trace(err)
+		return nil, exeerrors.ErrLoadDataParquetReadFailed.Wrap(err).GenWithStackByArgs(path, err.Error())
 	}
 
 	fileSchema := reader.MetaData().Schema
@@ -633,7 +634,7 @@ func NewParquetParser(
 		}
 
 		if _, ok := unsupportedParquetTypes[colTypes[i].converted]; ok {
-			return nil, errors.Errorf("unsupported parquet logical type %s", colTypes[i].converted.String())
+			return nil, exeerrors.ErrLoadDataParquetUnsupportedType.FastGenByArgs(colTypes[i].converted.String(), path)
 		}
 	}
 
