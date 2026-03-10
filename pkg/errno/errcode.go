@@ -1092,6 +1092,38 @@ const (
 	ErrQueryExecStopped                    = 8180
 	_                                      = 8181 // reserved for ErrPDTimestampLagsTooMuch
 
+	// IMPORT INTO granular error codes: pre-check phase
+	ErrLoadDataActiveJobExists         = 8182
+	ErrLoadDataNoFilesMatched          = 8183
+	ErrLoadDataTargetTableNotEmpty     = 8184
+	ErrLoadDataPiTRRunning             = 8185
+	ErrLoadDataCDCRunning              = 8186
+	ErrLoadDataCloudStorageUnsupported = 8187
+	ErrLoadDataCloudStorageAccessDenied = 8188
+
+	// IMPORT INTO granular error codes: file access phase
+	ErrLoadDataInvalidFilePath    = 8189
+	ErrLoadDataGlobPatternInvalid = 8190
+	ErrLoadDataFileOpenFailed     = 8191
+	ErrLoadDataDirWalkFailed      = 8192
+
+	// IMPORT INTO granular error codes: CSV/SQL parsing phase
+	ErrLoadDataCSVSyntaxError      = 8193
+	ErrLoadDataSQLSyntaxError      = 8194
+	ErrLoadDataRowSizeTooLarge     = 8195
+	ErrLoadDataColumnCountMismatch = 8196
+
+	// IMPORT INTO granular error codes: parquet parsing phase
+	ErrLoadDataParquetUnsupportedType = 8197
+	ErrLoadDataParquetReadFailed      = 8198
+	ErrLoadDataParquetDecimalError    = 8199
+
+	// IMPORT INTO granular error codes: post-processing / execution
+	ErrLoadDataUnknownColumns        = 8400
+	ErrLoadDataChecksumMismatch      = 8401
+	ErrLoadDataEncodeKVFailed        = 8402
+	ErrLoadDataParquetCompressedFile = 8403
+
 	// Error codes used by TiDB ddl package
 	ErrUnsupportedDDLOperation            = 8200
 	ErrNotOwner                           = 8201
