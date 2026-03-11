@@ -538,7 +538,7 @@ func (ti *TableImporter) StartDiskQuotaCheck(ctx context.Context) (stop func()) 
 	})
 	return func() {
 		cancel()
-		eg.Wait()
+		_ = eg.Wait()
 	}
 }
 
