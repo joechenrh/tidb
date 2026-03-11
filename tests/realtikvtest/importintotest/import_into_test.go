@@ -1204,7 +1204,7 @@ func (s *mockGCSSuite) TestDiskQuotaFromSelect() {
 	})
 
 	// Use a tiny disk_quota to force partial flushes to TiKV via UnsafeImportAndReset.
-	s.tk.MustExec("IMPORT INTO dst FROM SELECT * FROM src WITH disk_quota='1B'")
+	s.tk.MustExec("IMPORT INTO dst FROM SELECT * FROM src WITH disk_quota='819B'")
 	s.tk.MustQuery("SELECT count(1) FROM dst").Check(testkit.Rows(
 		strconv.Itoa(lineCount),
 	))
