@@ -1171,6 +1171,49 @@ func (s *mockGCSSuite) TestDiskQuota() {
 	))
 }
 
+func (s *mockGCSSuite) TestDiskQuotaFromSelect() {
+	s.tk.MustExec("DROP DATABASE IF EXISTS load_test_disk_quota_select;")
+	s.tk.MustExec("CREATE DATABASE load_test_disk_quota_select;")
+	s.tk.MustExec("USE load_test_disk_quota_select;")
+	s.tk.MustExec(`CREATE TABLE src(a int, b int)`)
+	s.tk.MustExec(`CREATE TABLE dst(a int, b int)`)
+
+	lineCount := 10000
+	var buf strings.Builder
+	for i := 0; i < lineCount; i += 100 {
+		buf.Reset()
+		for j := range 100 {
+			if j > 0 {
+				buf.WriteByte(',')
+			}
+			fmt.Fprintf(&buf, "(%d,%d)", i+j, i+j)
+		}
+		s.tk.MustExec("INSERT INTO src VALUES " + buf.String())
+	}
+
+	backup := importer.CheckDiskQuotaInterval
+	importer.CheckDiskQuotaInterval = time.Millisecond
+	defer func() {
+		importer.CheckDiskQuotaInterval = backup
+	}()
+
+	// Set a tiny storage size so adjustDiskQuota computes a very low disk quota
+	// (80% of 1024 = 819 bytes), forcing partial flushes to TiKV via UnsafeImportAndReset.
+	testfailpoint.Enable(s.T(), "github.com/pingcap/tidb/pkg/lightning/common/GetStorageSize", "return(1024)")
+
+	// Track that disk quota actually triggered UnsafeImportAndReset.
+	diskQuotaTriggered := atomic.NewBool(false)
+	testfailpoint.EnableCall(s.T(), "github.com/pingcap/tidb/pkg/executor/importer/afterDiskQuotaImport", func() {
+		diskQuotaTriggered.Store(true)
+	})
+
+	s.tk.MustExec("IMPORT INTO dst FROM SELECT * FROM src")
+	s.tk.MustQuery("SELECT count(1) FROM dst").Check(testkit.Rows(
+		strconv.Itoa(lineCount),
+	))
+	s.True(diskQuotaTriggered.Load(), "disk quota should have triggered UnsafeImportAndReset")
+}
+
 func (s *mockGCSSuite) TestAnalyze() {
 	s.T().Skip("skip for ci now")
 	s.tk.MustExec("DROP DATABASE IF EXISTS load_data;")
