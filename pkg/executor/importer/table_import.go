@@ -675,7 +675,6 @@ func (ti *TableImporter) ImportSelectedRows(ctx context.Context, se sessionctx.C
 	)
 
 	stopDiskQuotaCheck := ti.StartDiskQuotaCheck(ctx)
-	defer stopDiskQuotaCheck()
 
 	eg, egCtx := tidbutil.NewErrorGroupWithRecoverWithCtx(ctx)
 	for i := 0; i < ti.ThreadCnt; i++ {
@@ -690,12 +689,13 @@ func (ti *TableImporter) ImportSelectedRows(ctx context.Context, se sessionctx.C
 			return ProcessChunk(egCtx, &chunkCheckpoint, ti, dataEngine, indexEngine, ti.logger, chunkChecksum)
 		})
 	}
-	if err = eg.Wait(); err != nil {
-		return nil, err
-	}
+	err = eg.Wait()
 	// Stop disk quota checker before final engine close/import to avoid racing
 	// with FlushAllEngines/UnsafeImportAndReset.
 	stopDiskQuotaCheck()
+	if err != nil {
+		return nil, err
+	}
 
 	closedDataEngine, err := dataEngine.Close(ctx)
 	if err != nil {
