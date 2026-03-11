@@ -1197,17 +1197,14 @@ func (s *mockGCSSuite) TestDiskQuotaFromSelect() {
 		importer.CheckDiskQuotaInterval = backup
 	}()
 
-	// Set a tiny storage size so adjustDiskQuota computes a very low disk quota
-	// (80% of 1024 = 819 bytes), forcing partial flushes to TiKV via UnsafeImportAndReset.
-	testfailpoint.Enable(s.T(), "github.com/pingcap/tidb/pkg/lightning/common/GetStorageSize", "return(1024)")
-
 	// Track that disk quota actually triggered UnsafeImportAndReset.
 	diskQuotaTriggered := atomic.NewBool(false)
 	testfailpoint.EnableCall(s.T(), "github.com/pingcap/tidb/pkg/executor/importer/afterDiskQuotaImport", func() {
 		diskQuotaTriggered.Store(true)
 	})
 
-	s.tk.MustExec("IMPORT INTO dst FROM SELECT * FROM src")
+	// Use a tiny disk_quota to force partial flushes to TiKV via UnsafeImportAndReset.
+	s.tk.MustExec("IMPORT INTO dst FROM SELECT * FROM src WITH disk_quota='1B'")
 	s.tk.MustQuery("SELECT count(1) FROM dst").Check(testkit.Rows(
 		strconv.Itoa(lineCount),
 	))
