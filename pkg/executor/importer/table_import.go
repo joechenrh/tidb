@@ -674,8 +674,8 @@ func (ti *TableImporter) ImportSelectedRows(ctx context.Context, se sessionctx.C
 		checksum = verify.NewKVGroupChecksumWithKeyspace(ti.keyspace)
 	)
 
-	cancelFn := ti.StartDiskQuotaCheck(ctx)
-	defer cancelFn()
+	stopDiskQuotaCheck := ti.StartDiskQuotaCheck(ctx)
+	defer stopDiskQuotaCheck()
 
 	eg, egCtx := tidbutil.NewErrorGroupWithRecoverWithCtx(ctx)
 	for i := 0; i < ti.ThreadCnt; i++ {
@@ -693,6 +693,9 @@ func (ti *TableImporter) ImportSelectedRows(ctx context.Context, se sessionctx.C
 	if err = eg.Wait(); err != nil {
 		return nil, err
 	}
+	// Stop disk quota checker before final engine close/import to avoid racing
+	// with FlushAllEngines/UnsafeImportAndReset.
+	stopDiskQuotaCheck()
 
 	closedDataEngine, err := dataEngine.Close(ctx)
 	if err != nil {
