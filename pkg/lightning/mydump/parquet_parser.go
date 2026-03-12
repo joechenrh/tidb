@@ -577,12 +577,13 @@ func ReadParquetFileRowCountByFile(
 		_ = r.Close()
 	}()
 
-	reader, err := file.NewParquetReader(&parquetWrapper{ReadSeekCloser: r})
+	wrapper := &parquetWrapper{ReadSeekCloser: r}
+	meta, err := parseParquetMetaData(wrapper, fileMeta.FileSize)
 	if err != nil {
 		return 0, errors.Trace(err)
 	}
 
-	return reader.MetaData().NumRows, nil
+	return meta.NumRows, nil
 }
 
 // NewParquetParser generates a parquet parser.
@@ -590,8 +591,7 @@ func NewParquetParser(
 	ctx context.Context,
 	store storeapi.Storage,
 	r storeapi.ReadSeekCloser,
-	path string,
-	meta ParquetFileMeta,
+	fileMeta SourceFileMeta,
 ) (*ParquetParser, error) {
 	logger := log.Wrap(logutil.Logger(ctx))
 	wrapper := &parquetWrapper{ReadSeekCloser: r}
@@ -599,12 +599,17 @@ func NewParquetParser(
 		_ = r.Close()
 	}()
 
+	meta, err := parseParquetMetaData(wrapper, fileMeta.FileSize)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	allocator := memory.NewGoAllocator()
 	prop := parquet.NewReaderProperties(allocator)
 	prop.BufferedStreamEnabled = true
 	prop.BufferSize = 1024
 
-	reader, err := file.NewParquetReader(wrapper, file.WithReadProps(prop))
+	reader, err := file.NewParquetReader(wrapper, file.WithReadProps(prop), file.WithMetadata(meta))
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -648,13 +653,13 @@ func NewParquetParser(
 		colNames: colNames,
 		ctx:      ctx,
 		store:    store,
-		path:     path,
+		path:     fileMeta.Path,
 		prop:     prop,
 		alloc:    allocator,
 		logger:   logger,
 		rowPool:  &pool,
 	}
-	if err := parser.Init(meta.Loc); err != nil {
+	if err := parser.Init(fileMeta.ParquetMeta.Loc); err != nil {
 		return nil, errors.Trace(err)
 	}
 
@@ -664,19 +669,19 @@ func NewParquetParser(
 // SampleStatisticsFromParquet samples row size of the parquet file.
 func SampleStatisticsFromParquet(
 	ctx context.Context,
-	path string,
 	store storeapi.Storage,
+	fileMeta SourceFileMeta,
 ) (
 	rowCount int64,
 	avgRowSize float64,
 	err error,
 ) {
-	r, err := store.Open(ctx, path, nil)
+	r, err := store.Open(ctx, fileMeta.Path, nil)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{})
+	parser, err := NewParquetParser(ctx, store, r, fileMeta)
 	if err != nil {
 		return 0, 0, err
 	}

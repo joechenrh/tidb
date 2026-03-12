@@ -21,6 +21,8 @@ import (
 	"io"
 	"math/big"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,10 +51,17 @@ func newParquetParserForTest(
 	store, err := objstore.NewLocalStorage(dir)
 	require.NoError(t, err)
 
+	stat, err := os.Stat(filepath.Join(dir, fileName))
+	require.NoError(t, err)
+
 	r, err := store.Open(ctx, fileName, nil)
 	require.NoError(t, err)
 
-	parser, err := NewParquetParser(ctx, store, r, fileName, meta)
+	parser, err := NewParquetParser(ctx, store, r, SourceFileMeta{
+		Path:        fileName,
+		FileSize:    stat.Size(),
+		ParquetMeta: meta,
+	})
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -761,4 +770,123 @@ func TestParquetDecimalFromInt64(t *testing.T) {
 	var dec types.MyDecimal
 	raw := bytes.Repeat([]byte{0x7f}, 40)
 	require.ErrorIs(t, types.ErrOverflow, dec.FromParquetArray(raw, 0))
+}
+
+func TestParseParquetMetaData(t *testing.T) {
+	// buildFile builds a byte sequence: 4-byte header + body padding +
+	// 4-byte footer length (LE) + 4-byte footer magic.
+	buildFile := func(footerLen uint32, footerMagic [4]byte, bodySize int) []byte {
+		header := [4]byte{'P', 'A', 'R', '1'}
+		body := make([]byte, bodySize)
+		var fl [4]byte
+		fl[0] = byte(footerLen)
+		fl[1] = byte(footerLen >> 8)
+		fl[2] = byte(footerLen >> 16)
+		fl[3] = byte(footerLen >> 24)
+		var buf []byte
+		buf = append(buf, header[:]...)
+		buf = append(buf, body...)
+		buf = append(buf, fl[:]...)
+		buf = append(buf, footerMagic[:]...)
+		return buf
+	}
+	validMagic := [4]byte{'P', 'A', 'R', '1'}
+
+	tests := []struct {
+		name       string
+		content    []byte
+		wantSentinel error
+	}{
+		{
+			name:         "csv content",
+			content:      []byte("id,name,age\n1,alice,30\n"),
+			wantSentinel: ErrNotParquet,
+		},
+		{
+			name:         "sql content",
+			content:      []byte("INSERT INTO t VALUES (1, 'a');\n"),
+			wantSentinel: ErrNotParquet,
+		},
+		{
+			name:         "empty file",
+			content:      []byte{},
+			wantSentinel: ErrNotParquet,
+		},
+		{
+			name:         "too short",
+			content:      []byte("PAR1abcd---"),
+			wantSentinel: ErrNotParquet,
+		},
+		{
+			name:         "bad footer magic",
+			content:      buildFile(1, [4]byte{'N', 'O', 'P', 'E'}, 1),
+			wantSentinel: ErrNotParquet,
+		},
+		{
+			name:         "footer length zero",
+			content:      buildFile(0, validMagic, 1),
+			wantSentinel: ErrParquetCorrupt,
+		},
+		{
+			name: "footer length exceeds file size",
+			// Total size = 4 + 0 + 4 + 4 = 12, max valid footerLen = 12-8 = 4.
+			content:      buildFile(5, validMagic, 0),
+			wantSentinel: ErrParquetCorrupt,
+		},
+		{
+			name:         "encrypted parquet",
+			content:      buildFile(1, [4]byte{'P', 'A', 'R', 'E'}, 1),
+			wantSentinel: ErrParquetEncrypted,
+		},
+		{
+			name:         "valid structure but invalid thrift",
+			content:      buildFile(1, validMagic, 1),
+			wantSentinel: ErrParquetCorrupt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := bytes.NewReader(tt.content)
+			_, err := parseParquetMetaData(r, int64(len(tt.content)))
+			require.ErrorIs(t, err, tt.wantSentinel)
+		})
+	}
+
+	// Verify that a real parquet file parses successfully.
+	t.Run("real parquet file", func(t *testing.T) {
+		dir := t.TempDir()
+		fileName := "test.parquet"
+		pc := []ParquetColumn{
+			{
+				Name:      "id",
+				Type:      parquet.Types.Int64,
+				Converted: schema.ConvertedTypes.None,
+				Gen: func(numRows int) (any, []int16) {
+					data := make([]int64, numRows)
+					defLevels := make([]int16, numRows)
+					for i := range numRows {
+						data[i] = int64(i)
+						defLevels[i] = 1
+					}
+					return data, defLevels
+				},
+			},
+		}
+		WriteParquetFile(dir, fileName, pc, 10)
+
+		stat, err := os.Stat(filepath.Join(dir, fileName))
+		require.NoError(t, err)
+
+		store, err := objstore.NewLocalStorage(dir)
+		require.NoError(t, err)
+		r, err := store.Open(context.Background(), fileName, nil)
+		require.NoError(t, err)
+		defer r.Close()
+
+		wrapper := &parquetWrapper{ReadSeekCloser: r}
+		meta, err := parseParquetMetaData(wrapper, stat.Size())
+		require.NoError(t, err)
+		require.Equal(t, int64(10), meta.NumRows)
+	})
 }
