@@ -793,8 +793,8 @@ func TestParseParquetMetaData(t *testing.T) {
 	validMagic := [4]byte{'P', 'A', 'R', '1'}
 
 	tests := []struct {
-		name       string
-		content    []byte
+		name         string
+		content      []byte
 		wantSentinel error
 	}{
 		{
