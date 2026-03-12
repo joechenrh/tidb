@@ -57,14 +57,14 @@ var (
 	// files: "PARE".
 	parquetEncryptedMagic = [4]byte{'P', 'A', 'R', 'E'}
 
-	// ErrNotParquet indicates the file is not in Parquet format.
-	ErrNotParquet = errors.New("not a valid Parquet file")
-	// ErrParquetCorrupt indicates the file has Parquet magic but its
+	// errNotParquet indicates the file is not in Parquet format.
+	errNotParquet = errors.New("not a valid Parquet file")
+	// errParquetCorrupt indicates the file has Parquet magic but its
 	// metadata is inconsistent or unreadable.
-	ErrParquetCorrupt = errors.New("Parquet file is corrupt")
-	// ErrParquetEncrypted indicates the file uses Parquet encryption,
+	errParquetCorrupt = errors.New("Parquet file is corrupt")
+	// errParquetEncrypted indicates the file uses Parquet encryption,
 	// which is not supported.
-	ErrParquetEncrypted = errors.New("encrypted Parquet is not supported")
+	errParquetEncrypted = errors.New("encrypted Parquet is not supported")
 )
 
 // minParquetFileSize is the minimum valid Parquet file size:
@@ -76,7 +76,7 @@ const minParquetFileSize = 12
 // size from SourceFileMeta, which avoids a SeekEnd round-trip on cloud storage.
 func parseParquetMetaData(r io.ReaderAt, fileSize int64) (*metadata.FileMetaData, error) {
 	if fileSize < minParquetFileSize {
-		return nil, errors.Annotatef(ErrNotParquet,
+		return nil, errors.Annotatef(errNotParquet,
 			"file size %d is less than minimum %d", fileSize, minParquetFileSize)
 	}
 
@@ -90,16 +90,16 @@ func parseParquetMetaData(r io.ReaderAt, fileSize int64) (*metadata.FileMetaData
 	footerMagic := [4]byte(tail[4:8])
 	switch footerMagic {
 	case parquetEncryptedMagic:
-		return nil, errors.Trace(ErrParquetEncrypted)
+		return nil, errors.Trace(errParquetEncrypted)
 	case parquetMagic:
 	default:
-		return nil, errors.Annotate(ErrNotParquet, "missing trailing PAR1 magic")
+		return nil, errors.Annotate(errNotParquet, "missing trailing PAR1 magic")
 	}
 
 	// Validate footer length.
 	footerLen := int64(binary.LittleEndian.Uint32(tail[:4]))
 	if footerLen <= 0 || footerLen+8 > fileSize {
-		return nil, errors.Annotatef(ErrParquetCorrupt,
+		return nil, errors.Annotatef(errParquetCorrupt,
 			"invalid footer length %d for %d-byte file", footerLen, fileSize)
 	}
 
@@ -112,7 +112,7 @@ func parseParquetMetaData(r io.ReaderAt, fileSize int64) (*metadata.FileMetaData
 	// Deserialize (no decryptor — we don't support encrypted parquet).
 	meta, err := metadata.NewFileMetaData(footerBuf, nil)
 	if err != nil {
-		return nil, errors.Annotatef(ErrParquetCorrupt,
+		return nil, errors.Annotatef(errParquetCorrupt,
 			"failed to deserialize metadata: %s", err)
 	}
 	meta.SetSourceFileSize(fileSize)

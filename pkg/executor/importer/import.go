@@ -1699,6 +1699,12 @@ func (e *LoadDataController) GetParser(
 			nil,
 		)
 	case DataFormatParquet:
+		if dataFileInfo.Remote == nil {
+			return nil, exeerrors.ErrLoadDataCantRead.GenWithStackByArgs(
+				"missing parquet file metadata",
+				"file size is required to initialize the parquet parser",
+			)
+		}
 		parser, err = mydump.NewParquetParser(ctx, e.dataStore, reader, *dataFileInfo.Remote)
 	}
 	if err != nil {
