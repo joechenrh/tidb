@@ -48,9 +48,10 @@ const (
 
 var (
 	// getReadRangeFromPropsConcurrency limits the number of stats files scanned in
-	// parallel to avoid unbounded object-storage reads. Keep it aligned with the
-	// package-wide concurrent-read budget.
-	getReadRangeFromPropsConcurrency = concurrentReaderTotalConcurrency
+	// parallel to avoid bursty object-storage reads when an import step tracks a
+	// large number of files. Use a lower default than the data-reader budget
+	// because props scanning is metadata-heavy and benefits less from high fanout.
+	getReadRangeFromPropsConcurrency = 32
 )
 
 // getReadRangeFromProps reads the statistic files to find the largest offset of
