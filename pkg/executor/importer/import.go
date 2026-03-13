@@ -1700,6 +1700,9 @@ func (e *LoadDataController) GetParser(
 		)
 	case DataFormatParquet:
 		parser, err = mydump.NewParquetParser(ctx, e.dataStore, reader, *dataFileInfo.Remote)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err != nil {
 		return nil, exeerrors.ErrLoadDataWrongFormatConfig.GenWithStack(err.Error())

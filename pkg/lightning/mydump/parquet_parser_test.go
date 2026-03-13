@@ -35,6 +35,7 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/table"
 	"github.com/pingcap/tidb/pkg/types"
+	"github.com/pingcap/tidb/pkg/util/dbterror/exeerrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -800,48 +801,48 @@ func TestParseParquetMetaData(t *testing.T) {
 		{
 			name:         "csv content",
 			content:      []byte("id,name,age\n1,alice,30\n"),
-			wantSentinel: errNotParquet,
+			wantSentinel: exeerrors.ErrLoadDataInvalidParquet,
 		},
 		{
 			name:         "sql content",
 			content:      []byte("INSERT INTO t VALUES (1, 'a');\n"),
-			wantSentinel: errNotParquet,
+			wantSentinel: exeerrors.ErrLoadDataInvalidParquet,
 		},
 		{
 			name:         "empty file",
 			content:      []byte{},
-			wantSentinel: errNotParquet,
+			wantSentinel: exeerrors.ErrLoadDataInvalidParquet,
 		},
 		{
 			name:         "too short",
 			content:      []byte("PAR1abcd---"),
-			wantSentinel: errNotParquet,
+			wantSentinel: exeerrors.ErrLoadDataInvalidParquet,
 		},
 		{
 			name:         "bad footer magic",
 			content:      buildFile(1, [4]byte{'N', 'O', 'P', 'E'}, 1),
-			wantSentinel: errNotParquet,
+			wantSentinel: exeerrors.ErrLoadDataInvalidParquet,
 		},
 		{
 			name:         "footer length zero",
 			content:      buildFile(0, validMagic, 1),
-			wantSentinel: errParquetCorrupt,
+			wantSentinel: exeerrors.ErrLoadDataParquetCorrupt,
 		},
 		{
 			name: "footer length exceeds file size",
 			// Total size = 4 + 0 + 4 + 4 = 12, max valid footerLen = 12-8 = 4.
 			content:      buildFile(5, validMagic, 0),
-			wantSentinel: errParquetCorrupt,
+			wantSentinel: exeerrors.ErrLoadDataParquetCorrupt,
 		},
 		{
 			name:         "encrypted parquet",
 			content:      buildFile(1, [4]byte{'P', 'A', 'R', 'E'}, 1),
-			wantSentinel: errParquetEncrypted,
+			wantSentinel: exeerrors.ErrLoadDataParquetEncrypted,
 		},
 		{
 			name:         "valid structure but invalid thrift",
 			content:      buildFile(1, validMagic, 1),
-			wantSentinel: errParquetCorrupt,
+			wantSentinel: exeerrors.ErrLoadDataParquetCorrupt,
 		},
 	}
 
