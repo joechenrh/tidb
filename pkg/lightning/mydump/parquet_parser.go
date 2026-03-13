@@ -25,15 +25,16 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/metadata"
 	"github.com/apache/arrow-go/v18/parquet/schema"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/pkg/lightning/common"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 	"github.com/pingcap/tidb/pkg/types"
+	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/pingcap/tidb/pkg/util/timeutil"
 	"github.com/pingcap/tidb/pkg/util/zeropool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -210,10 +211,21 @@ type rowGroupParser struct {
 }
 
 // init creates column iterators for each column.
-func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location, targets []*model.ColumnInfo) error {
+func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location, targets []*model.ColumnInfo) (err error) {
 	meta := rgp.readers[0].MetaData()
 	numCols := meta.Schema.NumColumns()
 	rgp.iterators = make([]iterator, numCols)
+
+	defer func() {
+		if err != nil {
+			for _, iter := range rgp.iterators {
+				if iter != nil {
+					_ = iter.Close()
+				}
+			}
+		}
+	}()
+
 	for col := range numCols {
 		tp := meta.Schema.Column(col).PhysicalType()
 		var target *model.ColumnInfo
@@ -255,20 +267,17 @@ func (rgp *rowGroupParser) readRow(row []types.Datum) error {
 	return nil
 }
 
-func (rgp *rowGroupParser) Close() (err error) {
+func (rgp *rowGroupParser) Close() error {
+	var onceErr common.OnceError
 	for _, iter := range rgp.iterators {
-		err2 := iter.Close()
-		if err2 != nil && err == nil {
-			err = err2
-		}
+		err := iter.Close()
+		onceErr.Set(err)
 	}
 	for _, r := range rgp.readers {
-		err2 := r.Close()
-		if err2 != nil && err == nil {
-			err = err2
-		}
+		err := r.Close()
+		onceErr.Set(err)
 	}
-	return err
+	return onceErr.Get()
 }
 
 // ParquetParser parses a parquet file for import
@@ -323,12 +332,15 @@ func (pp *ParquetParser) Init(loc *time.Location) error {
 }
 
 func (pp *ParquetParser) buildRowGroupParser() (err error) {
-	var (
-		eg      errgroup.Group
-		builder = pp.getBuilder()
-		readers = make([]*file.Reader, pp.fileMeta.NumColumns())
-	)
+	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(pp.ctx)
+	eg.SetLimit(8)
 
+	builder, err := pp.getBuilder(egCtx)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	readers := make([]*file.Reader, pp.fileMeta.NumColumns())
 	defer func() {
 		if err != nil {
 			for _, r := range readers {
@@ -375,26 +387,34 @@ func (pp *ParquetParser) buildRowGroupParser() (err error) {
 	return nil
 }
 
-func (pp *ParquetParser) getBuilder() func(int) (readerAtSeekerCloser, error) {
-	ranges := rowGroupRangeFromMeta(pp.fileMeta.RowGroup(pp.curRowGroup))
+func (pp *ParquetParser) getBuilder(ctx context.Context) (func(int) (readerAtSeekerCloser, error), error) {
+	ranges, err := rowGroupRangeFromMeta(pp.fileMeta, pp.curRowGroup)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
 	if ranges.end-ranges.start <= int64(rowGroupInMemoryThreshold) {
-		base, err := newInMemoryReaderBase(pp.ctx, pp.store, pp.path, ranges)
+		base, err := newInMemoryReaderBase(ctx, pp.store, pp.path, ranges)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		pp.logger.Debug("use in memory reader for parquet file", zap.String("path", pp.path))
 		return func(c int) (readerAtSeekerCloser, error) {
 			return &inMemoryParquetWrapper{
 				base:     base,
 				pos:      ranges.columnStarts[c],
 				fileSize: pp.fileMeta.GetSourceFileSize(),
-			}, err
-		}
+			}, nil
+		}, nil
 	}
 
 	return func(c int) (readerAtSeekerCloser, error) {
-		return newParquetWrapper(pp.ctx, pp.store, pp.path,
+		return newParquetWrapper(ctx, pp.store, pp.path,
 			&storeapi.ReaderOption{
 				StartOffset: &ranges.columnStarts[c],
 				EndOffset:   &ranges.columnEnds[c],
 			})
-	}
+	}, nil
 }
 
 func (pp *ParquetParser) moveToNextRowGroup() error {
@@ -474,13 +494,15 @@ func (pp *ParquetParser) Close() error {
 		}
 	}()
 
+	var onceErr common.OnceError
 	if pp.rowGroup != nil {
 		if err := pp.rowGroup.Close(); err != nil {
+			onceErr.Set(err)
 			pp.logger.Warn("Close parquet parser get error", zap.Error(err))
 		}
 		pp.rowGroup = nil
 	}
-	return nil
+	return onceErr.Get()
 }
 
 // ReadRow reads a row in the parquet file by the parser.

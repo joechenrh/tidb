@@ -16,6 +16,7 @@ package mydump
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math"
 
@@ -25,7 +26,7 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/backend/external"
 	"github.com/pingcap/tidb/pkg/objstore"
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
-	"golang.org/x/sync/errgroup"
+	"github.com/pingcap/tidb/pkg/util"
 )
 
 const (
@@ -35,15 +36,19 @@ const (
 	// data is stored in this buffer to avoid potentially reopening the
 	// underlying file when the gap size is less than the buffer size.
 	defaultBufSize = 64 * 1024
+
+	// Copied from https://github.com/apache/arrow-go/blob/bbf7ab7523a6411e25c7a08566a40e8759cc6c13/parquet/file/row_group_reader.go#L32C1-L34C2
+	maxDictHeaderSize int64 = 100
 )
 
 var (
-	// rowGroupInMemoryThreshold is the max row-group size that enables in-memory
-	// reader. For each row group in a Parquet file that is smaller than this
-	// threshold, we load that row group into memory once, reducing the number
-	// of GET requests for less throttling risk, with the acceptable memory
-	// consumption.
-	rowGroupInMemoryThreshold = 140 * units.MiB
+	// rowGroupInMemoryThreshold controls when we preload an entire row group.
+	// If the row-group size is no larger than this threshold, we read it once
+	// into memory and let all column readers share that buffer. This reduces
+	// number of GET requests for files with many small columns, where first-byte
+	// latency can dominate read time. 128 MiB is an heuristic value which we can
+	// tolerate the extra memory usage for row group.
+	rowGroupInMemoryThreshold = 128 * units.MiB
 )
 
 type readerAtSeekerCloser interface {
@@ -188,7 +193,8 @@ func (r *inMemoryReaderBase) loadRowGroup(
 ) error {
 	rg := r.rowGroup
 
-	var eg errgroup.Group
+	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
+	eg.SetLimit(8)
 	readStart := rg.start
 	for readStart < rg.end {
 		batchSize := min(int64(external.ConcurrentReaderBufferSizePerConc), rg.end-readStart)
@@ -197,7 +203,7 @@ func (r *inMemoryReaderBase) loadRowGroup(
 		offset := start - rg.start
 		eg.Go(func() error {
 			_, err := objstore.ReadDataInRange(
-				ctx,
+				egCtx,
 				store,
 				path,
 				start,
@@ -244,16 +250,44 @@ func (*inMemoryParquetWrapper) Close() error {
 	return nil
 }
 
-func rowGroupRangeFromMeta(rg *metadata.RowGroupMetaData) rowGroupRange {
+// Copied from https://github.com/apache/arrow-go/blob/bbf7ab7523a6411e25c7a08566a40e8759cc6c13/parquet/file/row_group_reader.go
+func rowGroupRangeFromMeta(fileMeta *metadata.FileMetaData, idx int) (rowGroupRange, error) {
+	rg := fileMeta.RowGroup(idx)
 	ranges := rowGroupRange{start: math.MaxInt64}
 	for i := range rg.NumColumns() {
-		col, _ := rg.ColumnChunk(i)
-		start := col.DataPageOffset()
-		if col.HasDictionaryPage() && col.DictionaryPageOffset() > 0 {
-			start = min(start, col.DictionaryPageOffset())
+		col, err := rg.ColumnChunk(i)
+		if err != nil {
+			return ranges, fmt.Errorf("cannot get column chunk %d metadata: %v", i, err)
 		}
-		ranges.add(start, start+col.TotalCompressedSize())
+		colStart := col.DataPageOffset()
+		if col.HasDictionaryPage() && col.DictionaryPageOffset() > 0 {
+			colStart = min(colStart, col.DictionaryPageOffset())
+		}
+
+		colLen := col.TotalCompressedSize()
+		// PARQUET-816 workaround for old files created by older parquet-mr
+		if fileMeta.WriterVersion().LessThan(metadata.Parquet816FixedVersion) {
+			sourceSz := fileMeta.GetSourceFileSize()
+			// The Parquet MR writer had a bug in 1.2.8 and below where it didn't include the
+			// dictionary page header size in total_compressed_size and total_uncompressed_size
+			// (see IMPALA-694). We add padding to compensate.
+			if colStart < 0 || colLen < 0 {
+				return ranges, fmt.Errorf(
+					"invalid column chunk metadata, offset (%d) and length (%d) should both be positive",
+					colStart, colLen)
+			}
+			if colStart > sourceSz || colLen > sourceSz {
+				return ranges, fmt.Errorf(
+					"invalid column chunk metadata, offset (%d) and length (%d) must both be less than total source size (%d)",
+					colStart, colLen, sourceSz)
+			}
+			bytesRemain := sourceSz - (colStart + colLen)
+			padding := min(maxDictHeaderSize, bytesRemain)
+			colLen += padding
+		}
+
+		ranges.add(colStart, colStart+colLen)
 	}
 
-	return ranges
+	return ranges, nil
 }
