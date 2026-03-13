@@ -94,13 +94,17 @@ func MergeOverlappingFilesV2(
 		SetOnCloseFunc(onWriterClose).
 		BuildOneFile(store, newFilePrefix, writerID)
 	defer func() {
-		err = splitter.Close()
-		if err != nil {
-			logutil.Logger(ctx).Warn("close range splitter failed", zap.Error(err))
+		if closeErr := splitter.Close(); closeErr != nil {
+			logutil.Logger(ctx).Warn("close range splitter failed", zap.Error(closeErr))
+			if err == nil {
+				err = closeErr
+			}
 		}
-		err = writer.Close(ctx)
-		if err != nil {
-			logutil.Logger(ctx).Warn("close writer failed", zap.Error(err))
+		if closeErr := writer.Close(ctx); closeErr != nil {
+			logutil.Logger(ctx).Warn("close writer failed", zap.Error(closeErr))
+			if err == nil {
+				err = closeErr
+			}
 		}
 	}()
 
