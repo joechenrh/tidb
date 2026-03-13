@@ -706,8 +706,8 @@ func TestReadAllDataLargeFiles(t *testing.T) {
 	err = readAllData(
 		ctx, store, dataFiles, statFiles,
 		startKey, endKey,
-		readRanges[0].startOffs,
-		readRanges[1].endOffs,
+		readRanges[0],
+		readRanges[1],
 		smallBlockBufPool, largeBlockBufPool, output)
 	t.Logf("read all data cost: %s", time.Since(now))
 	intest.AssertNoError(err)
@@ -862,8 +862,8 @@ finishCreateFiles:
 	err = readAllData(
 		ctx, store, dataFiles, statFiles,
 		readRangeStart, readRangeEnd,
-		readRanges[0].startOffs,
-		readRanges[1].endOffs,
+		readRanges[0],
+		readRanges[1],
 		smallBlockBufPool, largeBlockBufPool, output)
 	require.NoError(t, err)
 	output.build(ctx)

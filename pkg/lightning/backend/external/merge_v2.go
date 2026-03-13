@@ -128,7 +128,7 @@ func MergeOverlappingFilesV2(
 
 		now := time.Now()
 
-		var readRanges []offsetsForKey
+		var readRanges [][]uint64
 		readRanges, err = getReadRangeFromProps(
 			ctx, [][]byte{curStart, curEnd}, statFilesOfGroup, store)
 		if err != nil {
@@ -142,8 +142,8 @@ func MergeOverlappingFilesV2(
 			statFilesOfGroup,
 			curStart,
 			curEnd,
-			readRanges[0].startOffs,
-			readRanges[1].endOffs,
+			readRanges[0],
+			readRanges[1],
 			bufPool,
 			bufPool,
 			loaded,

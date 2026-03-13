@@ -162,8 +162,8 @@ func TestReadLargeFile(t *testing.T) {
 	err = readAllData(
 		ctx, memStore, datas, stats,
 		startKey, endKey,
-		readRanges[0].startOffs,
-		readRanges[1].endOffs,
+		readRanges[0],
+		readRanges[1],
 		smallBlockBufPool, largeBlockBufPool, output)
 	require.NoError(t, err)
 	output.build(ctx)
