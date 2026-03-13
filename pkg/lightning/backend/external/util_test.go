@@ -107,55 +107,55 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	got, err := getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5")}, paths, store)
 	require.NoError(t, err)
 	// key2.5: file1 => prop "key1" matches (offset=10), file2 => prop "key2" matches (offset=20)
-	require.Equal(t, [2][]uint64{{10, 20}, {10 + ts, 20 + ts}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{10, 20}, endOffs: []uint64{10 + ts, 20 + ts}}, got[0])
 
 	// two keys between props
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5"), []byte("key2.6")}, paths, store)
 	require.NoError(t, err)
-	require.Equal(t, [2][]uint64{{10, 20}, {10 + ts, 20 + ts}}, got[0])
-	require.Equal(t, [2][]uint64{{10, 20}, {10 + ts, 20 + ts}}, got[1])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{10, 20}, endOffs: []uint64{10 + ts, 20 + ts}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{10, 20}, endOffs: []uint64{10 + ts, 20 + ts}}, got[1])
 
 	// key exactly on a prop boundary
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, paths, store)
 	require.NoError(t, err)
 	// key3: file1 => prop "key3" matches (offset=30), file2 => prop "key2" matches (offset=20)
-	require.Equal(t, [2][]uint64{{30, 20}, {30 + ts, 20 + ts}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{30, 20}, endOffs: []uint64{30 + ts, 20 + ts}}, got[0])
 
 	// two keys, second exactly on a prop boundary
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5"), []byte("key3")}, paths, store)
 	require.NoError(t, err)
-	require.Equal(t, [2][]uint64{{10, 20}, {10 + ts, 20 + ts}}, got[0])
-	require.Equal(t, [2][]uint64{{30, 20}, {30 + ts, 20 + ts}}, got[1])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{10, 20}, endOffs: []uint64{10 + ts, 20 + ts}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{30, 20}, endOffs: []uint64{30 + ts, 20 + ts}}, got[1])
 
 	// key below all props
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key0")}, paths, store)
 	require.NoError(t, err)
 	// key0: no prop <= key0, so offset stays at zero default
-	require.Equal(t, [2][]uint64{{0, 0}, {0, 0}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{0, 0}, endOffs: []uint64{0, 0}}, got[0])
 
 	// key exactly on first prop
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, paths, store)
 	require.NoError(t, err)
 	// key1: file1 => prop "key1" matches (offset=10), file2 => no prop <= key1 so 0
-	require.Equal(t, [2][]uint64{{10, 0}, {10 + ts, 0}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{10, 0}, endOffs: []uint64{10 + ts, 0}}, got[0])
 
 	// two keys: one below all, one on first prop
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key0"), []byte("key1")}, paths, store)
 	require.NoError(t, err)
-	require.Equal(t, [2][]uint64{{0, 0}, {0, 0}}, got[0])
-	require.Equal(t, [2][]uint64{{10, 0}, {10 + ts, 0}}, got[1])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{0, 0}, endOffs: []uint64{0, 0}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{10, 0}, endOffs: []uint64{10 + ts, 0}}, got[1])
 
 	// key above all props
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key999")}, paths, store)
 	require.NoError(t, err)
 	// key999: file1 => last prop "key5" (offset=50), file2 => last prop "key4" (offset=40)
-	require.Equal(t, [2][]uint64{{50, 40}, {50 + ts, 40 + ts}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{50, 40}, endOffs: []uint64{50 + ts, 40 + ts}}, got[0])
 
 	// two identical keys above all props
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key999"), []byte("key999")}, paths, store)
 	require.NoError(t, err)
-	require.Equal(t, [2][]uint64{{50, 40}, {50 + ts, 40 + ts}}, got[0])
-	require.Equal(t, [2][]uint64{{50, 40}, {50 + ts, 40 + ts}}, got[1])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{50, 40}, endOffs: []uint64{50 + ts, 40 + ts}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{50, 40}, endOffs: []uint64{50 + ts, 40 + ts}}, got[1])
 
 	// empty stat file should return zero offsets
 	file3 := "/test3"
@@ -165,7 +165,7 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	require.NoError(t, err)
 	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, []string{file1, file2, file3}, store)
 	require.NoError(t, err)
-	require.Equal(t, [2][]uint64{{30, 20, 0}, {30 + ts, 20 + ts, 0}}, got[0])
+	require.Equal(t, offsetsForKey{startOffs: []uint64{30, 20, 0}, endOffs: []uint64{30 + ts, 20 + ts, 0}}, got[0])
 }
 
 func TestGetReadRangeFromPropsEmptyJobKeys(t *testing.T) {
@@ -227,7 +227,13 @@ func TestGetReadRangeFromPropsLimitsParallelRead(t *testing.T) {
 		}
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	// The errgroup limit prevents additional goroutines from entering Open.
+	// Verify no third Open call was made while the first two are blocked.
+	select {
+	case <-store.startedCh:
+		t.Fatal("more than 2 concurrent opens detected despite concurrency limit")
+	case <-time.After(200 * time.Millisecond):
+	}
 	require.EqualValues(t, 2, store.max.Load())
 
 	close(store.releaseCh)

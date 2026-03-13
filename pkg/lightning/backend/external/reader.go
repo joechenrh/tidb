@@ -39,7 +39,7 @@ func readAllData(
 	store storeapi.Storage,
 	dataFiles, statsFiles []string,
 	startKey, endKey []byte,
-	startOffsets, endOffsets []uint64,
+	startOffsets, estimatedEndOffsets []uint64,
 	smallBlockBufPool *membuf.Pool,
 	largeBlockBufPool *membuf.Pool,
 	output *memKVsAndBuffers,
@@ -71,7 +71,7 @@ func readAllData(
 	totalFileSize := uint64(0)
 	bufSize := uint64(ConcurrentReaderBufferSizePerConc)
 	for i := range statsFiles {
-		size := endOffsets[i] - startOffsets[i]
+		size := estimatedEndOffsets[i] - startOffsets[i]
 		totalFileSize += size
 		expectedConc := size / bufSize
 		// let the stat internals cover the [startKey, endKey) since the offsets
@@ -87,7 +87,7 @@ func readAllData(
 			logutil.Logger(ctx).Info("found hotspot file in readAllData",
 				zap.String("filename", statsFiles[i]),
 				zap.Uint64("startOffset", startOffsets[i]),
-				zap.Uint64("endOffset", endOffsets[i]),
+				zap.Uint64("endOffset", estimatedEndOffsets[i]),
 				zap.Uint64("expectedConc", expectedConc),
 				zap.Uint64("concurrency", concurrences[i]),
 			)
