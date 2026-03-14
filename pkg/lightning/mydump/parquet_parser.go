@@ -17,7 +17,6 @@ package mydump
 import (
 	"context"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -28,6 +27,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/lightning/common"
 	"github.com/pingcap/tidb/pkg/lightning/log"
+	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tidb/pkg/util"
@@ -37,27 +37,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	// defaultBufSize specifies the default size of skip buffer.
-	// Skip buffer is used when reading data from the cloud. If there is a gap
-	// between the current read position and the last read position, these
-	// data is stored in this buffer to avoid potentially reopening the
-	// underlying file when the gap size is less than the buffer size.
-	defaultBufSize = 64 * 1024
-)
-
 var (
-	unsupportedParquetTypes = map[schema.ConvertedType]struct{}{
-		// TODO(joechenrh): support read list type as vector
-		schema.ConvertedTypes.List: {},
-		// The below types are not used for data exported from aurora/snowflake,
-		// so we don't support them for now.
-		schema.ConvertedTypes.Map:         {},
-		schema.ConvertedTypes.MapKeyValue: {},
-		schema.ConvertedTypes.Interval:    {},
-		schema.ConvertedTypes.NA:          {},
-	}
-
 	// readBatchSize is the number of rows to read in a single batch
 	// from parquet column reader. Modified in test.
 	readBatchSize = 128
@@ -181,20 +161,26 @@ func (it *columnIterator[T, R]) Next(d *types.Datum) error {
 	return it.setter(value, d)
 }
 
-func createColumnIterator(tp parquet.Type, converted *convertedType, loc *time.Location, batchSize int) iterator {
+func createColumnIterator(
+	tp parquet.Type,
+	converted *convertedType,
+	loc *time.Location,
+	target *model.ColumnInfo,
+	batchSize int,
+) iterator {
 	switch tp {
 	case parquet.Types.Boolean:
 		return newColumnIterator[bool, *file.BooleanColumnChunkReader](batchSize, getBoolDataSetter)
 	case parquet.Types.Int32:
-		return newColumnIterator[int32, *file.Int32ColumnChunkReader](batchSize, getInt32Setter(converted, loc))
+		return newColumnIterator[int32, *file.Int32ColumnChunkReader](batchSize, getInt32Setter(converted, loc, target))
 	case parquet.Types.Int64:
-		return newColumnIterator[int64, *file.Int64ColumnChunkReader](batchSize, getInt64Setter(converted, loc))
+		return newColumnIterator[int64, *file.Int64ColumnChunkReader](batchSize, getInt64Setter(converted, loc, target))
 	case parquet.Types.Float:
 		return newColumnIterator[float32, *file.Float32ColumnChunkReader](batchSize, setFloat32Data)
 	case parquet.Types.Double:
 		return newColumnIterator[float64, *file.Float64ColumnChunkReader](batchSize, setFloat64Data)
 	case parquet.Types.Int96:
-		return newColumnIterator[parquet.Int96, *file.Int96ColumnChunkReader](batchSize, getInt96Setter(converted, loc))
+		return newColumnIterator[parquet.Int96, *file.Int96ColumnChunkReader](batchSize, getInt96Setter(converted, loc, target))
 	case parquet.Types.ByteArray:
 		return newColumnIterator[parquet.ByteArray, *file.ByteArrayColumnChunkReader](batchSize, getByteArraySetter(converted))
 	case parquet.Types.FixedLenByteArray:
@@ -225,7 +211,7 @@ type rowGroupParser struct {
 }
 
 // init creates column iterators for each column.
-func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location) (err error) {
+func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location, targets []*model.ColumnInfo) (err error) {
 	meta := rgp.readers[0].MetaData()
 	numCols := meta.Schema.NumColumns()
 	rgp.iterators = make([]iterator, numCols)
@@ -240,20 +226,24 @@ func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location) (e
 		}
 	}()
 
-	for idx := range numCols {
-		tp := meta.Schema.Column(idx).PhysicalType()
-		iter := createColumnIterator(tp, &colTypes[idx], loc, readBatchSize)
+	for col := range numCols {
+		tp := meta.Schema.Column(col).PhysicalType()
+		var target *model.ColumnInfo
+		if col < len(targets) {
+			target = targets[col]
+		}
+		iter := createColumnIterator(tp, &colTypes[col], loc, target, readBatchSize)
 		if iter == nil {
 			return errors.Errorf("unsupported parquet type %s", tp.String())
 		}
 
-		rowGroup := rgp.readers[idx].RowGroup(rgp.rowGroup)
-		colReader, err := rowGroup.Column(idx)
+		rowGroup := rgp.readers[col].RowGroup(rgp.rowGroup)
+		colReader, err := rowGroup.Column(col)
 		if err != nil {
 			return errors.Trace(err)
 		}
 		iter.SetReader(colReader)
-		rgp.iterators[idx] = iter
+		rgp.iterators[col] = iter
 	}
 	rgp.totalRows = meta.RowGroups[rgp.rowGroup].NumRows
 	return nil
@@ -295,6 +285,11 @@ type ParquetParser struct {
 	fileMeta *metadata.FileMetaData
 	colTypes []convertedType
 	colNames []string
+
+	physicalTypes []parquet.Type
+	targetCols    []*model.ColumnInfo
+	skipCastPrechecks []columnSkipCastPrecheck
+	skipCast          []bool
 
 	ctx   context.Context
 	store storeapi.Storage
@@ -386,7 +381,7 @@ func (pp *ParquetParser) buildRowGroupParser() (err error) {
 		rowGroup: pp.curRowGroup,
 		readers:  readers,
 	}
-	if err := rgp.init(pp.colTypes, pp.loc); err != nil {
+	if err := rgp.init(pp.colTypes, pp.loc, pp.targetCols); err != nil {
 		return errors.Trace(err)
 	}
 	pp.rowGroup = rgp
@@ -511,6 +506,33 @@ func (pp *ParquetParser) Close() error {
 	return onceErr.Get()
 }
 
+func (pp *ParquetParser) fillSkipCast(row []types.Datum) {
+	if pp.skipCastPrechecks == nil {
+		return
+	}
+	if cap(pp.skipCast) < len(row) {
+		pp.skipCast = make([]bool, len(row))
+	}
+	pp.skipCast = pp.skipCast[:len(row)]
+	for i := range row {
+		if i >= len(pp.skipCastPrechecks) {
+			pp.skipCast[i] = false
+			continue
+		}
+		pc := pp.skipCastPrechecks[i]
+		switch pc.checkKind {
+		case skipCheckUnconditional:
+			pp.skipCast[i] = true
+		case skipCheckString:
+			pp.skipCast[i] = passStringPostCheck(row[i], pc.targetFlen, pc.encoding)
+		case skipCheckDecimal:
+			pp.skipCast[i] = passDecimalPostCheck(row[i], pc.targetFlen, pc.targetDecimal, pc.unsigned)
+		default:
+			pp.skipCast[i] = false
+		}
+	}
+}
+
 // ReadRow reads a row in the parquet file by the parser.
 // The read data is shallow copied from the internal buffer of parquet reader,
 // so it's only valid before the next ReadRow call.
@@ -526,6 +548,8 @@ func (pp *ParquetParser) ReadRow() error {
 
 	pp.lastRow.Row = row
 	pp.lastRow.Length = estimateRowSize(row)
+	pp.fillSkipCast(row)
+	pp.lastRow.SkipCast = pp.skipCast
 	return nil
 }
 
@@ -592,6 +616,7 @@ func NewParquetParser(
 	r storeapi.ReadSeekCloser,
 	path string,
 	meta ParquetFileMeta,
+	targetColumns []*model.ColumnInfo,
 ) (*ParquetParser, error) {
 	logger := log.Wrap(logutil.Logger(ctx))
 	wrapper := &parquetWrapper{ReadSeekCloser: r}
@@ -609,33 +634,17 @@ func NewParquetParser(
 		return nil, errors.Trace(err)
 	}
 
-	fileSchema := reader.MetaData().Schema
-	colTypes := make([]convertedType, fileSchema.NumColumns())
-	colNames := make([]string, 0, fileSchema.NumColumns())
-
-	for i := range colTypes {
-		desc := reader.MetaData().Schema.Column(i)
-		colNames = append(colNames, strings.ToLower(desc.Name()))
-
-		logicalType := desc.LogicalType()
-		if logicalType.IsValid() {
-			colTypes[i].converted, colTypes[i].decimalMeta = logicalType.ToConvertedType()
-			if t, ok := logicalType.(*schema.TimeLogicalType); ok {
-				colTypes[i].IsAdjustedToUTC = t.IsAdjustedToUTC()
-			} else {
-				colTypes[i].IsAdjustedToUTC = true
-			}
-		} else {
-			colTypes[i].converted = desc.ConvertedType()
-			colTypes[i].IsAdjustedToUTC = true
-			pnode, _ := desc.SchemaNode().(*schema.PrimitiveNode)
-			colTypes[i].decimalMeta = pnode.DecimalMetadata()
-		}
-
-		if _, ok := unsupportedParquetTypes[colTypes[i].converted]; ok {
-			return nil, errors.Errorf("unsupported parquet logical type %s", colTypes[i].converted.String())
-		}
+	fileMeta := reader.MetaData()
+	colTypes, colNames, err := extractColumnTypes(fileMeta)
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
+
+	physicalTypes := make([]parquet.Type, fileMeta.NumColumns())
+	for i := range physicalTypes {
+		physicalTypes[i] = fileMeta.Schema.Column(i).PhysicalType()
+	}
+	skipCastPrechecks := buildSkipCastPrechecks(colTypes, physicalTypes, targetColumns)
 
 	numColumns := len(colTypes)
 	pool := zeropool.New(func() []types.Datum {
@@ -643,16 +652,20 @@ func NewParquetParser(
 	})
 
 	parser := &ParquetParser{
-		fileMeta: reader.MetaData(),
+		fileMeta: fileMeta,
 		colTypes: colTypes,
 		colNames: colNames,
-		ctx:      ctx,
-		store:    store,
-		path:     path,
-		prop:     prop,
-		alloc:    allocator,
-		logger:   logger,
-		rowPool:  &pool,
+
+		physicalTypes: physicalTypes,
+		targetCols:    targetColumns,
+		skipCastPrechecks: skipCastPrechecks,
+		ctx:           ctx,
+		store:         store,
+		path:          path,
+		prop:          prop,
+		alloc:         allocator,
+		logger:        logger,
+		rowPool:       &pool,
 	}
 	if err := parser.Init(meta.Loc); err != nil {
 		return nil, errors.Trace(err)
@@ -676,7 +689,7 @@ func SampleStatisticsFromParquet(
 		return 0, 0, err
 	}
 
-	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{})
+	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{}, nil)
 	if err != nil {
 		return 0, 0, err
 	}
