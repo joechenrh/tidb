@@ -51,7 +51,7 @@ func TestKVEncoderForDupResolve(t *testing.T) {
 		encoder, err := importer.NewTableKVEncoderForDupResolve(encodeCfg, controller)
 		require.NoError(t, err)
 		for range 10 {
-			pairs, err := encoder.Encode([]types.Datum{types.NewDatum(1)}, 1)
+			pairs, err := encoder.Encode([]types.Datum{types.NewDatum(1)}, nil, 1)
 			require.NoError(t, err)
 			require.Len(t, pairs.Pairs, 2)
 			var metRecordKey bool

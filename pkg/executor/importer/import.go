@@ -1696,12 +1696,17 @@ func (e *LoadDataController) GetParser(
 			nil,
 		)
 	case DataFormatParquet:
+		targetCols := make([]*model.ColumnInfo, len(e.InsertColumns))
+		for i, col := range e.InsertColumns {
+			targetCols[i] = col.ToInfo()
+		}
 		parser, err = mydump.NewParquetParser(
 			ctx,
 			e.dataStore,
 			reader,
 			dataFileInfo.Remote.Path,
 			dataFileInfo.Remote.ParquetMeta,
+			targetCols,
 		)
 	}
 	if err != nil {

@@ -42,6 +42,10 @@ type TableKVEncoder struct {
 	insertColumnRowCache []types.Datum
 	rowCache             []types.Datum
 	hasValueCache        []bool
+
+	// fileColIdxForInsertCol maps each insert-column index to the
+	// corresponding file-column index. -1 means no mapping (e.g., SET clause).
+	fileColIdxForInsertCol []int
 }
 
 // NewTableKVEncoder creates a new TableKVEncoder.
@@ -77,22 +81,24 @@ func newTableKVEncoderInner(
 		return nil, err
 	}
 
-	return &TableKVEncoder{
+	enc := &TableKVEncoder{
 		BaseKVEncoder:     baseKVEncoder,
 		columnAssignments: colAssignExprs,
 		fieldMappings:     fieldMappings,
 		insertColumns:     insertColumns,
-	}, nil
+	}
+	enc.initInsertColFileMapping()
+	return enc, nil
 }
 
 // Encode table row into KVs.
-func (en *TableKVEncoder) Encode(row []types.Datum, rowID int64) (*kv.Pairs, error) {
+func (en *TableKVEncoder) Encode(row []types.Datum, skipCast []bool, rowID int64) (*kv.Pairs, error) {
 	// we ignore warnings when encoding rows now, but warnings uses the same memory as parser, since the input
 	// row []types.Datum share the same underlying buf, and when doing CastValue, we're using hack.String/hack.Slice.
 	// when generating error such as mysql.ErrDataOutOfRange, the data will be part of the error, causing the buf
 	// unable to release. So we truncate the warnings here.
 	defer en.TruncateWarns()
-	record, err := en.parserData2TableData(row, rowID)
+	record, err := en.parserData2TableData(row, skipCast, rowID)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +107,7 @@ func (en *TableKVEncoder) Encode(row []types.Datum, rowID int64) (*kv.Pairs, err
 }
 
 // todo merge with code in load_data.go
-func (en *TableKVEncoder) parserData2TableData(parserData []types.Datum, rowID int64) ([]types.Datum, error) {
+func (en *TableKVEncoder) parserData2TableData(parserData []types.Datum, skipCast []bool, rowID int64) ([]types.Datum, error) {
 	if cap(en.insertColumnRowCache) < len(en.insertColumns) {
 		en.insertColumnRowCache = make([]types.Datum, 0, len(en.insertColumns))
 	}
@@ -171,7 +177,7 @@ func (en *TableKVEncoder) parserData2TableData(parserData []types.Datum, rowID i
 	}
 
 	// a new row buffer will be allocated in getRow
-	newRow, err := en.getRow(row, hasValue, rowID)
+	newRow, err := en.getRow(row, skipCast, hasValue, rowID)
 	if err != nil {
 		return nil, err
 	}
@@ -183,15 +189,18 @@ func (en *TableKVEncoder) parserData2TableData(parserData []types.Datum, rowID i
 // The input values from these two statements are datums instead of
 // expressions which are used in `insert into set x=y`.
 // copied from InsertValues
-func (en *TableKVEncoder) getRow(vals []types.Datum, hasValue []bool, rowID int64) ([]types.Datum, error) {
+func (en *TableKVEncoder) getRow(vals []types.Datum, skipCast []bool, hasValue []bool, rowID int64) ([]types.Datum, error) {
 	row := en.rowCache
 	for i := range en.insertColumns {
+		offset := en.insertColumns[i].Offset
+		if en.canSkipCastColumnValue(i, skipCast) {
+			row[offset] = vals[i]
+			continue
+		}
 		casted, err := table.CastColumnValue(en.SessionCtx.GetExprCtx(), vals[i], en.insertColumns[i].ToInfo(), false, false)
 		if err != nil {
 			return nil, err
 		}
-
-		offset := en.insertColumns[i].Offset
 		row[offset] = casted
 	}
 
@@ -236,6 +245,35 @@ func (en *TableKVEncoder) fillRow(row []types.Datum, hasValue []bool, rowID int6
 	}
 
 	return record, nil
+}
+
+func (en *TableKVEncoder) initInsertColFileMapping() {
+	en.fileColIdxForInsertCol = make([]int, len(en.insertColumns))
+	insertIdx := 0
+	for fileIdx, mapping := range en.fieldMappings {
+		if mapping == nil || mapping.Column == nil {
+			continue
+		}
+		if insertIdx < len(en.fileColIdxForInsertCol) {
+			en.fileColIdxForInsertCol[insertIdx] = fileIdx
+		}
+		insertIdx++
+	}
+	// SET clause columns have no file column
+	for ; insertIdx < len(en.fileColIdxForInsertCol); insertIdx++ {
+		en.fileColIdxForInsertCol[insertIdx] = -1
+	}
+}
+
+func (en *TableKVEncoder) canSkipCastColumnValue(insertColIdx int, skipCast []bool) bool {
+	if skipCast == nil || insertColIdx >= len(en.fileColIdxForInsertCol) {
+		return false
+	}
+	fileIdx := en.fileColIdxForInsertCol[insertColIdx]
+	if fileIdx < 0 || fileIdx >= len(skipCast) {
+		return false
+	}
+	return skipCast[fileIdx]
 }
 
 // Close the TableKVEncoder.
