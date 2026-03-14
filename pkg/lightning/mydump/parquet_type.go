@@ -666,6 +666,12 @@ func getInt64Setter(converted *convertedType, loc *time.Location, target *model.
 			return nil
 		}
 	case schema.ConvertedTypes.None, schema.ConvertedTypes.Int64:
+		if target != nil && mysql.HasUnsignedFlag(target.GetFlag()) {
+			return func(val int64, d *types.Datum) error {
+				d.SetUint64(uint64(val))
+				return nil
+			}
+		}
 		return func(val int64, d *types.Datum) error {
 			d.SetInt64(val)
 			return nil

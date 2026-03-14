@@ -29,6 +29,7 @@ import (
 	"github.com/pingcap/tidb/pkg/table"
 	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tidb/pkg/util/chunk"
+	"github.com/pingcap/tidb/pkg/util/intest"
 )
 
 // TableKVEncoder encodes a row of data into a KV pair.
@@ -255,6 +256,8 @@ func (en *TableKVEncoder) initInsertColFileMapping() {
 			continue
 		}
 		if insertIdx < len(en.fileColIdxForInsertCol) {
+			intest.Assert(mapping.Column.ID == en.insertColumns[insertIdx].ID,
+				"fieldMapping column ID mismatch with insertColumns")
 			en.fileColIdxForInsertCol[insertIdx] = fileIdx
 		}
 		insertIdx++

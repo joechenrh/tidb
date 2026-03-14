@@ -520,6 +520,15 @@ func (pp *ParquetParser) fillSkipCast(row []types.Datum) {
 			continue
 		}
 		pc := pp.skipCastPrechecks[i]
+		if pc.checkKind == skipCheckNoSkip {
+			pp.skipCast[i] = false
+			continue
+		}
+		// Null values are safe to skip cast — CastColumnValue is a no-op for nulls.
+		if row[i].IsNull() {
+			pp.skipCast[i] = true
+			continue
+		}
 		switch pc.checkKind {
 		case skipCheckUnconditional:
 			pp.skipCast[i] = true

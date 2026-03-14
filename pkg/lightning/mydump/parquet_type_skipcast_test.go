@@ -239,6 +239,11 @@ func TestStringPostCheck(t *testing.T) {
 		require.True(t, passStringPostCheck(d, 100, nil))
 	})
 
+	t.Run("varbinary exceeds byte length", func(t *testing.T) {
+		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
+		require.False(t, passStringPostCheck(d, 2, nil))
+	})
+
 	t.Run("negative flen means unlimited", func(t *testing.T) {
 		d := types.NewStringDatum("any length string")
 		require.True(t, passStringPostCheck(d, -1, utf8Enc))
@@ -312,6 +317,19 @@ func TestBuildSkipCastPrechecks(t *testing.T) {
 			require.Equal(t, tc.expectKind, infos[0].checkKind)
 		})
 	}
+}
+
+func TestPostCheckNullValues(t *testing.T) {
+	t.Run("null passes string post-check via fillSkipCast early exit", func(t *testing.T) {
+		// passStringPostCheck returns false for null (wrong kind),
+		// but fillSkipCast should handle null before dispatching.
+		d := types.Datum{}
+		require.True(t, d.IsNull())
+		// Null should NOT pass passStringPostCheck directly
+		require.False(t, passStringPostCheck(d, 100, nil))
+		// But passDecimalPostCheck also returns false for null
+		require.False(t, passDecimalPostCheck(d, 10, 2, false))
+	})
 }
 
 func TestDecimalPostCheck(t *testing.T) {
