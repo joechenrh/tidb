@@ -91,7 +91,7 @@ func parquetColumnPrecheck(
 
 	switch tp.physical {
 	case parquet.Types.Boolean:
-		if canSkipBoolToInteger(target) {
+		if isIntegerType(target.GetType()) {
 			info.checkKind = castSkipAlways
 		}
 		return info
@@ -106,11 +106,9 @@ func parquetColumnPrecheck(
 		}
 		return info
 	case parquet.Types.Int32:
-		info = parquetInt32SkipCastInfo(tp, target, info)
-		return info
+		return parquetInt32SkipCastInfo(tp, target, info)
 	case parquet.Types.Int64:
-		info = parquetInt64SkipCastInfo(tp, target, info)
-		return info
+		return parquetInt64SkipCastInfo(tp, target, info)
 	case parquet.Types.Int96:
 		if target.GetType() == mysql.TypeDate || target.GetType() == mysql.TypeDatetime {
 			info.checkKind = castSkipAlways
@@ -215,18 +213,6 @@ func parquetInt64SkipCastInfo(
 		}
 	}
 	return info
-}
-
-func canSkipBoolToInteger(target *model.ColumnInfo) bool {
-	if !isIntegerType(target.GetType()) {
-		return false
-	}
-	if mysql.HasUnsignedFlag(target.GetFlag()) {
-		_, maxValue, ok := unsignedIntTypeRange(target.GetType())
-		return ok && maxValue >= 1
-	}
-	minValue, maxValue, ok := signedIntTypeRange(target.GetType())
-	return ok && minValue <= 0 && maxValue >= 1
 }
 
 func signedRangeFitsTarget(sourceMin int64, sourceMax int64, target *model.ColumnInfo) bool {
