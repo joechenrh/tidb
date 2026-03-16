@@ -390,7 +390,7 @@ func TestParquetVariousTypes(t *testing.T) {
 
 func TestParquetAurora(t *testing.T) {
 	fileName := "test.parquet"
-	parser := newParquetParserForTest(context.Background(), t, "examples", fileName, ParquetFileMeta{})
+	parser := newParquetParserForTest(context.TODO(), t, "examples", fileName, ParquetFileMeta{})
 
 	require.Equal(t, []string{"id", "val1", "val2", "d1", "d2", "d3", "d4", "d5", "d6"}, parser.Columns())
 
