@@ -102,8 +102,12 @@ func (en *TableKVEncoder) Encode(row []types.Datum, skipCast []bool, rowID int64
 	// row []types.Datum share the same underlying buf, and when doing CastValue, we're using hack.String/hack.Slice.
 	// when generating error such as mysql.ErrDataOutOfRange, the data will be part of the error, causing the buf
 	// unable to release. So we truncate the warnings here.
-	defer en.TruncateWarns()
 	en.currentSkipCast = skipCast
+	defer func() {
+		en.TruncateWarns()
+		en.currentSkipCast = nil
+	}()
+
 	record, err := en.parserData2TableData(row, rowID)
 	if err != nil {
 		return nil, err
