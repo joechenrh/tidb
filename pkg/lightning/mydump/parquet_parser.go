@@ -187,7 +187,7 @@ func (it *columnIterator[T, R]) Next(d *types.Datum) error {
 
 func createColumnIterator(
 	tp parquet.Type,
-	converted *convertedType,
+	converted *columnType,
 	loc *time.Location,
 	target *model.ColumnInfo,
 	batchSize int,
@@ -214,10 +214,11 @@ func createColumnIterator(
 	}
 }
 
-// convertedType is older representation of the logical type in parquet
+// columnType stores both logical/physical types for parquet columns.
 // ref: https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
-type convertedType struct {
+type columnType struct {
 	converted   schema.ConvertedType
+	physical    parquet.Type
 	decimalMeta schema.DecimalMetadata
 
 	// See https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#temporal-types
@@ -235,7 +236,7 @@ type rowGroupParser struct {
 }
 
 // init creates column iterators for each column.
-func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location, targets []*model.ColumnInfo) (err error) {
+func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, targets []*model.ColumnInfo) (err error) {
 	meta := rgp.readers[0].MetaData()
 	numCols := meta.Schema.NumColumns()
 	rgp.iterators = make([]iterator, numCols)
@@ -250,24 +251,24 @@ func (rgp *rowGroupParser) init(colTypes []convertedType, loc *time.Location, ta
 		}
 	}()
 
-	for col := range numCols {
-		tp := meta.Schema.Column(col).PhysicalType()
+	for idx := range numCols {
+		tp := meta.Schema.Column(idx).PhysicalType()
 		var target *model.ColumnInfo
-		if col < len(targets) {
-			target = targets[col]
+		if idx < len(targets) {
+			target = targets[idx]
 		}
-		iter := createColumnIterator(tp, &colTypes[col], loc, target, readBatchSize)
+		iter := createColumnIterator(tp, &colTypes[idx], loc, target, readBatchSize)
 		if iter == nil {
 			return errors.Errorf("unsupported parquet type %s", tp.String())
 		}
 
-		rowGroup := rgp.readers[col].RowGroup(rgp.rowGroup)
-		colReader, err := rowGroup.Column(col)
+		rowGroup := rgp.readers[idx].RowGroup(rgp.rowGroup)
+		colReader, err := rowGroup.Column(idx)
 		if err != nil {
 			return errors.Trace(err)
 		}
 		iter.SetReader(colReader)
-		rgp.iterators[col] = iter
+		rgp.iterators[idx] = iter
 	}
 	rgp.totalRows = meta.RowGroups[rgp.rowGroup].NumRows
 	return nil
@@ -307,10 +308,9 @@ func (rgp *rowGroupParser) Close() error {
 // ParquetParser parses a parquet file for import
 type ParquetParser struct {
 	fileMeta *metadata.FileMetaData
-	colTypes []convertedType
+	colTypes []columnType
 	colNames []string
 
-	physicalTypes     []parquet.Type
 	targetCols        []*model.ColumnInfo
 	skipCastPrechecks []columnSkipCastPrecheck
 	skipCast          []bool
@@ -557,9 +557,9 @@ func (pp *ParquetParser) fillSkipCast(row []types.Datum) {
 		case skipCheckUnconditional:
 			pp.skipCast[i] = true
 		case skipCheckString:
-			pp.skipCast[i] = passStringPostCheck(row[i], pc.targetFlen, pc.encoding)
+			pp.skipCast[i] = postCheckString(row[i], pc.targetFlen, pc.encoding)
 		case skipCheckDecimal:
-			pp.skipCast[i] = passDecimalPostCheck(row[i], pc.targetFlen, pc.targetDecimal, pc.unsigned)
+			pp.skipCast[i] = postCheckDecimal(row[i], pc.targetFlen, pc.targetDecimal, pc.unsigned)
 		default:
 			pp.skipCast[i] = false
 		}
@@ -671,13 +671,14 @@ func NewParquetParser(
 
 	fileMeta := reader.MetaData()
 	fileSchema := fileMeta.Schema
-	colTypes := make([]convertedType, fileSchema.NumColumns())
+	colTypes := make([]columnType, fileSchema.NumColumns())
 	colNames := make([]string, 0, fileSchema.NumColumns())
 
 	for i := range colTypes {
 		desc := fileSchema.Column(i)
 		colNames = append(colNames, strings.ToLower(desc.Name()))
 
+		colTypes[i].physical = desc.PhysicalType()
 		logicalType := desc.LogicalType()
 		if logicalType.IsValid() {
 			colTypes[i].converted, colTypes[i].decimalMeta = logicalType.ToConvertedType()
@@ -698,11 +699,7 @@ func NewParquetParser(
 		}
 	}
 
-	physicalTypes := make([]parquet.Type, fileMeta.NumColumns())
-	for i := range physicalTypes {
-		physicalTypes[i] = fileMeta.Schema.Column(i).PhysicalType()
-	}
-	skipCastPrechecks := buildSkipCastPrechecks(colTypes, physicalTypes, meta.TargetColumns)
+	skipCastPrechecks := buildSkipCastPrechecks(colTypes, meta.TargetColumns)
 
 	numColumns := len(colTypes)
 	pool := zeropool.New(func() []types.Datum {
@@ -714,7 +711,6 @@ func NewParquetParser(
 		colTypes: colTypes,
 		colNames: colNames,
 
-		physicalTypes:     physicalTypes,
 		targetCols:        meta.TargetColumns,
 		skipCastPrechecks: skipCastPrechecks,
 		ctx:               ctx,

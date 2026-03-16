@@ -215,37 +215,37 @@ func TestStringPostCheck(t *testing.T) {
 
 	t.Run("valid utf8 within length", func(t *testing.T) {
 		d := types.NewStringDatum("hello")
-		require.True(t, passStringPostCheck(d, 10, utf8Enc))
+		require.True(t, postCheckString(d, 10, utf8Enc))
 	})
 
 	t.Run("valid utf8 exceeds char length", func(t *testing.T) {
 		d := types.NewStringDatum("hello")
-		require.False(t, passStringPostCheck(d, 3, utf8Enc))
+		require.False(t, postCheckString(d, 3, utf8Enc))
 	})
 
 	t.Run("multi-byte within char length", func(t *testing.T) {
 		d := types.NewStringDatum("你好") // 2 chars, 6 bytes
-		require.True(t, passStringPostCheck(d, 5, utf8Enc))
+		require.True(t, postCheckString(d, 5, utf8Enc))
 	})
 
 	t.Run("invalid utf8 fails", func(t *testing.T) {
 		d := types.NewBytesDatum([]byte{0xff, 0xfe})
-		require.False(t, passStringPostCheck(d, 100, utf8Enc))
+		require.False(t, postCheckString(d, 100, utf8Enc))
 	})
 
 	t.Run("varbinary nil encoding accepts any bytes", func(t *testing.T) {
 		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.True(t, passStringPostCheck(d, 100, nil))
+		require.True(t, postCheckString(d, 100, nil))
 	})
 
 	t.Run("varbinary exceeds byte length", func(t *testing.T) {
 		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.False(t, passStringPostCheck(d, 2, nil))
+		require.False(t, postCheckString(d, 2, nil))
 	})
 
 	t.Run("negative flen means unlimited", func(t *testing.T) {
 		d := types.NewStringDatum("any length string")
-		require.True(t, passStringPostCheck(d, -1, utf8Enc))
+		require.True(t, postCheckString(d, -1, utf8Enc))
 	})
 }
 
@@ -323,9 +323,9 @@ func TestPostCheckNullValues(t *testing.T) {
 		d := types.Datum{}
 		require.True(t, d.IsNull())
 		// Null should NOT pass passStringPostCheck directly
-		require.False(t, passStringPostCheck(d, 100, nil))
+		require.False(t, postCheckString(d, 100, nil))
 		// But passDecimalPostCheck also returns false for null
-		require.False(t, passDecimalPostCheck(d, 10, 2, false))
+		require.False(t, postCheckDecimal(d, 10, 2, false))
 	})
 }
 
@@ -334,27 +334,27 @@ func TestDecimalPostCheck(t *testing.T) {
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("123.45")))
 		d := types.NewDecimalDatum(dec)
-		require.True(t, passDecimalPostCheck(d, 5, 2, false))
+		require.True(t, postCheckDecimal(d, 5, 2, false))
 	})
 
 	t.Run("precision overflow", func(t *testing.T) {
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("123456.78")))
 		d := types.NewDecimalDatum(dec)
-		require.False(t, passDecimalPostCheck(d, 5, 2, false))
+		require.False(t, postCheckDecimal(d, 5, 2, false))
 	})
 
 	t.Run("negative into unsigned", func(t *testing.T) {
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("-1.00")))
 		d := types.NewDecimalDatum(dec)
-		require.False(t, passDecimalPostCheck(d, 10, 2, true))
+		require.False(t, postCheckDecimal(d, 10, 2, true))
 	})
 
 	t.Run("frac mismatch", func(t *testing.T) {
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("1.2")))
 		d := types.NewDecimalDatum(dec)
-		require.False(t, passDecimalPostCheck(d, 10, 2, false))
+		require.False(t, postCheckDecimal(d, 10, 2, false))
 	})
 }

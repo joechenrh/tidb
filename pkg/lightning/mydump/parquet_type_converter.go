@@ -59,23 +59,21 @@ const (
 )
 
 func buildSkipCastPrechecks(
-	colTypes []convertedType,
-	physicalTypes []parquet.Type,
+	colTypes []columnType,
 	targetCols []*model.ColumnInfo,
 ) []columnSkipCastPrecheck {
 	infos := make([]columnSkipCastPrecheck, len(colTypes))
 	for i := range colTypes {
-		if i >= len(physicalTypes) || i >= len(targetCols) || targetCols[i] == nil {
+		if i >= len(colTypes) || i >= len(targetCols) || targetCols[i] == nil {
 			continue
 		}
-		infos[i] = parquetColumnPrecheck(colTypes[i], physicalTypes[i], targetCols[i])
+		infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
 	}
 	return infos
 }
 
 func parquetColumnPrecheck(
-	converted convertedType,
-	physicalType parquet.Type,
+	tp columnType,
 	target *model.ColumnInfo,
 ) columnSkipCastPrecheck {
 	info := columnSkipCastPrecheck{
@@ -90,7 +88,7 @@ func parquetColumnPrecheck(
 		return info
 	}
 
-	switch physicalType {
+	switch tp.physical {
 	case parquet.Types.Boolean:
 		if canSkipBoolToInteger(target) {
 			info.checkKind = skipCheckUnconditional
@@ -107,10 +105,10 @@ func parquetColumnPrecheck(
 		}
 		return info
 	case parquet.Types.Int32:
-		info = parquetInt32SkipCastInfo(converted, target, info)
+		info = parquetInt32SkipCastInfo(tp, target, info)
 		return info
 	case parquet.Types.Int64:
-		info = parquetInt64SkipCastInfo(converted, target, info)
+		info = parquetInt64SkipCastInfo(tp, target, info)
 		return info
 	case parquet.Types.Int96:
 		if target.GetType() == mysql.TypeDate || target.GetType() == mysql.TypeDatetime {
@@ -118,13 +116,13 @@ func parquetColumnPrecheck(
 		}
 		return info
 	case parquet.Types.ByteArray, parquet.Types.FixedLenByteArray:
-		if converted.converted == schema.ConvertedTypes.Decimal && target.GetType() == mysql.TypeNewDecimal {
-			if canSkipDecimalByMeta(converted.decimalMeta, target) {
+		if tp.converted == schema.ConvertedTypes.Decimal && target.GetType() == mysql.TypeNewDecimal {
+			if canSkipDecimalByMeta(tp.decimalMeta, target) {
 				info.checkKind = skipCheckDecimal
 			}
 			return info
 		}
-		if converted.converted == schema.ConvertedTypes.UTF8 && canSkipStringTarget(target) {
+		if tp.converted == schema.ConvertedTypes.UTF8 && canSkipStringTarget(target) {
 			info.checkKind = skipCheckString
 			info.targetFlen = target.GetFlen()
 			// For binary charset (VARBINARY), encoding is nil — only byte length check needed.
@@ -139,7 +137,7 @@ func parquetColumnPrecheck(
 }
 
 func parquetInt32SkipCastInfo(
-	converted convertedType,
+	converted columnType,
 	target *model.ColumnInfo,
 	info columnSkipCastPrecheck,
 ) columnSkipCastPrecheck {
@@ -181,7 +179,7 @@ func parquetInt32SkipCastInfo(
 }
 
 func parquetInt64SkipCastInfo(
-	converted convertedType,
+	converted columnType,
 	target *model.ColumnInfo,
 	info columnSkipCastPrecheck,
 ) columnSkipCastPrecheck {
@@ -525,7 +523,7 @@ func getBoolDataSetter(val bool, d *types.Datum) error {
 	return nil
 }
 
-func getInt32Setter(converted *convertedType, loc *time.Location, target *model.ColumnInfo) setter[int32] {
+func getInt32Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[int32] {
 	temporalType := temporalTargetType(target, mysql.TypeTimestamp)
 	temporalFSP := temporalTargetFSP(target, 6)
 	if temporalType == mysql.TypeDate {
@@ -583,7 +581,7 @@ func getInt32Setter(converted *convertedType, loc *time.Location, target *model.
 	return nil
 }
 
-func getInt64Setter(converted *convertedType, loc *time.Location, target *model.ColumnInfo) setter[int64] {
+func getInt64Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[int64] {
 	temporalType := temporalTargetType(target, mysql.TypeTimestamp)
 	temporalFSP := temporalTargetFSP(target, 6)
 	if temporalType == mysql.TypeDate {
@@ -708,7 +706,7 @@ func setInt96Data(
 	setTemporalDatum(t, d, targetType, targetFSP)
 }
 
-func getInt96Setter(converted *convertedType, loc *time.Location, target *model.ColumnInfo) setter[parquet.Int96] {
+func getInt96Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[parquet.Int96] {
 	temporalType := temporalTargetType(target, mysql.TypeTimestamp)
 	temporalFSP := temporalTargetFSP(target, 6)
 	if temporalType == mysql.TypeDate {
@@ -730,7 +728,7 @@ func setFloat64Data(val float64, d *types.Datum) error {
 	return nil
 }
 
-func getByteArraySetter(converted *convertedType) setter[parquet.ByteArray] {
+func getByteArraySetter(converted *columnType) setter[parquet.ByteArray] {
 	switch converted.converted {
 	case schema.ConvertedTypes.None, schema.ConvertedTypes.BSON, schema.ConvertedTypes.JSON, schema.ConvertedTypes.UTF8, schema.ConvertedTypes.Enum:
 		return func(val parquet.ByteArray, d *types.Datum) error {
@@ -747,7 +745,7 @@ func getByteArraySetter(converted *convertedType) setter[parquet.ByteArray] {
 	return nil
 }
 
-func passStringPostCheck(val types.Datum, targetFlen int, enc charset.Encoding) bool {
+func postCheckString(val types.Datum, targetFlen int, enc charset.Encoding) bool {
 	if val.Kind() != types.KindString && val.Kind() != types.KindBytes {
 		return false
 	}
@@ -755,23 +753,19 @@ func passStringPostCheck(val types.Datum, targetFlen int, enc charset.Encoding) 
 	if enc != nil && !enc.IsValid(b) {
 		return false
 	}
-	if targetFlen < 0 {
+	if targetFlen == types.UnspecifiedLength || len(b) <= targetFlen {
 		return true
 	}
-	if len(b) <= targetFlen {
-		return true
+	if enc != nil {
+		// For non-binary charsets, flen is character count.
+		// CastColumnValue uses utf8.RuneCountInString for all non-BLOB string types
+		// regardless of charset (see ProduceStrWithSpecifiedTp in datum.go:1258-1259).
+		return utf8.RuneCount(b) <= targetFlen
 	}
-	// For binary (enc==nil), flen is byte count — already checked above.
-	if enc == nil {
-		return false
-	}
-	// For non-binary charsets, flen is character count.
-	// CastColumnValue uses utf8.RuneCountInString for all non-BLOB string types
-	// regardless of charset (see ProduceStrWithSpecifiedTp in datum.go:1258-1259).
-	return utf8.RuneCount(b) <= targetFlen
+	return true
 }
 
-func passDecimalPostCheck(val types.Datum, targetFlen int, targetDecimal int, unsigned bool) bool {
+func postCheckDecimal(val types.Datum, targetFlen int, targetDecimal int, unsigned bool) bool {
 	if val.Kind() != types.KindMysqlDecimal {
 		return false
 	}
@@ -789,7 +783,7 @@ func passDecimalPostCheck(val types.Datum, targetFlen int, targetDecimal int, un
 	return true
 }
 
-func getFixedLenByteArraySetter(converted *convertedType) setter[parquet.FixedLenByteArray] {
+func getFixedLenByteArraySetter(converted *columnType) setter[parquet.FixedLenByteArray] {
 	switch converted.converted {
 	case schema.ConvertedTypes.None, schema.ConvertedTypes.BSON, schema.ConvertedTypes.JSON, schema.ConvertedTypes.UTF8, schema.ConvertedTypes.Enum:
 		return func(val parquet.FixedLenByteArray, d *types.Datum) error {
