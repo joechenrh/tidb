@@ -65,9 +65,10 @@ func buildSkipCastPrechecks(
 ) []columnSkipCastPrecheck {
 	infos := make([]columnSkipCastPrecheck, len(colTypes))
 	for i := range colTypes {
-		if targetCols[i] != nil {
-			infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
+		if i >= len(targetCols) || targetCols[i] == nil {
+			continue
 		}
+		infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
 	}
 	return infos
 }
