@@ -681,8 +681,6 @@ func NewParquetParser(
 		}
 	}
 
-	skipCastPrechecks := buildSkipCastPrechecks(colTypes, meta.TargetColumns)
-
 	numColumns := len(colTypes)
 	pool := zeropool.New(func() []types.Datum {
 		return make([]types.Datum, numColumns)
@@ -692,9 +690,6 @@ func NewParquetParser(
 		fileMeta: fileMeta,
 		colTypes: colTypes,
 		colNames: colNames,
-
-		skipCastPrechecks: skipCastPrechecks,
-		skipCast:          make([]bool, numColumns),
 		ctx:               ctx,
 		store:             store,
 		path:              path,
@@ -702,6 +697,10 @@ func NewParquetParser(
 		alloc:             allocator,
 		logger:            logger,
 		rowPool:           &pool,
+	}
+	if meta.TargetColumns != nil {
+		parser.skipCastPrechecks = buildSkipCastPrechecks(colTypes, meta.TargetColumns)
+		parser.skipCast = make([]bool, numColumns)
 	}
 	if err := parser.Init(meta.Loc); err != nil {
 		return nil, errors.Trace(err)

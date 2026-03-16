@@ -65,7 +65,7 @@ func buildSkipCastPrechecks(
 ) []columnSkipCastPrecheck {
 	infos := make([]columnSkipCastPrecheck, len(colTypes))
 	for i := range colTypes {
-		if i < len(targetCols) && targetCols[i] != nil {
+		if targetCols[i] != nil {
 			infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
 		}
 	}
@@ -516,7 +516,8 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 			d.SetInt64(int64(val))
 			return nil
 		}
-	case schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16:
+	case schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16,
+		schema.ConvertedTypes.Uint32:
 		if target != nil && !mysql.HasUnsignedFlag(target.GetFlag()) {
 			return func(val int32, d *types.Datum) error {
 				d.SetInt64(int64(val))

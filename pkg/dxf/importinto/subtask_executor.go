@@ -70,9 +70,11 @@ func (e *importMinimalTaskExecutor) Run(
 	sharedVars := e.mTtask.SharedVars
 
 	chunkCheckpoint := toChunkCheckpoint(e.mTtask.Chunk)
-	targetCols := make([]*model.ColumnInfo, len(sharedVars.TableImporter.InsertColumns))
-	for i, col := range sharedVars.TableImporter.InsertColumns {
-		targetCols[i] = col.ToInfo()
+	targetCols := make([]*model.ColumnInfo, len(sharedVars.TableImporter.FieldMappings))
+	for i, fm := range sharedVars.TableImporter.FieldMappings {
+		if fm != nil && fm.Column != nil {
+			targetCols[i] = fm.Column.ToInfo()
+		}
 	}
 	chunkCheckpoint.FileMeta.ParquetMeta = mydump.ParquetFileMeta{
 		Loc:           sharedVars.TableImporter.Location,
