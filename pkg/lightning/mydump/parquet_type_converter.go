@@ -65,10 +65,9 @@ func buildSkipCastPrechecks(
 ) []columnSkipCastPrecheck {
 	infos := make([]columnSkipCastPrecheck, len(colTypes))
 	for i := range colTypes {
-		if i >= len(targetCols) || targetCols[i] == nil {
-			continue
+		if i < len(targetCols) && targetCols[i] != nil {
+			infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
 		}
-		infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
 	}
 	return infos
 }
@@ -154,10 +153,8 @@ func parquetInt32SkipCastInfo(
 		if target.GetType() == mysql.TypeNewDecimal && canSkipDecimalByMeta(converted.decimalMeta, target) {
 			info.checkKind = castCheckDecimal
 		}
-	case schema.ConvertedTypes.Int8, schema.ConvertedTypes.Int16,
-		schema.ConvertedTypes.Int32, schema.ConvertedTypes.None,
-		schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16:
-		// Physical type is int32, so the actual value range is always [MinInt32, MaxInt32].
+	default:
+		// Physical type is int32, value range is always [MinInt32, MaxInt32].
 		if signedRangeFitsTarget(math.MinInt32, math.MaxInt32, target) {
 			info.checkKind = castSkipAlways
 		}
@@ -505,8 +502,7 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 			setTemporalDatum(t, d, temporalType, temporalFSP)
 			return nil
 		}
-	case schema.ConvertedTypes.Int32, schema.ConvertedTypes.Int16,
-		schema.ConvertedTypes.Int8, schema.ConvertedTypes.None:
+	default:
 		if target != nil && mysql.HasUnsignedFlag(target.GetFlag()) {
 			return func(val int32, d *types.Datum) error {
 				d.SetUint64(uint64(uint32(val)))
@@ -517,21 +513,7 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 			d.SetInt64(int64(val))
 			return nil
 		}
-	case schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16,
-		schema.ConvertedTypes.Uint32:
-		if target != nil && !mysql.HasUnsignedFlag(target.GetFlag()) {
-			return func(val int32, d *types.Datum) error {
-				d.SetInt64(int64(val))
-				return nil
-			}
-		}
-		return func(val int32, d *types.Datum) error {
-			d.SetUint64(uint64(uint32(val)))
-			return nil
-		}
 	}
-
-	return nil
 }
 
 func getInt64Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[int64] {
@@ -541,44 +523,6 @@ func getInt64Setter(converted *columnType, loc *time.Location, target *model.Col
 		temporalFSP = 0
 	}
 	switch converted.converted {
-	case schema.ConvertedTypes.Uint64,
-		schema.ConvertedTypes.Uint32,
-		schema.ConvertedTypes.Uint16,
-		schema.ConvertedTypes.Uint8:
-		if target != nil && !mysql.HasUnsignedFlag(target.GetFlag()) {
-			return func(val int64, d *types.Datum) error {
-				d.SetInt64(val)
-				return nil
-			}
-		}
-		return func(val int64, d *types.Datum) error {
-			d.SetUint64(uint64(val))
-			return nil
-		}
-	case schema.ConvertedTypes.Int32,
-		schema.ConvertedTypes.Int16,
-		schema.ConvertedTypes.Int8:
-		if target != nil && mysql.HasUnsignedFlag(target.GetFlag()) {
-			return func(val int64, d *types.Datum) error {
-				d.SetUint64(uint64(val))
-				return nil
-			}
-		}
-		return func(val int64, d *types.Datum) error {
-			d.SetInt64(val)
-			return nil
-		}
-	case schema.ConvertedTypes.None, schema.ConvertedTypes.Int64:
-		if target != nil && mysql.HasUnsignedFlag(target.GetFlag()) {
-			return func(val int64, d *types.Datum) error {
-				d.SetUint64(uint64(val))
-				return nil
-			}
-		}
-		return func(val int64, d *types.Datum) error {
-			d.SetInt64(val)
-			return nil
-		}
 	case schema.ConvertedTypes.TimeMicros:
 		return func(val int64, d *types.Datum) error {
 			// Convert microseconds to time.Time
@@ -614,9 +558,18 @@ func getInt64Setter(converted *columnType, loc *time.Location, target *model.Col
 			dec := initializeMyDecimal(d)
 			return setParquetDecimalFromInt64(val, dec, converted.decimalMeta)
 		}
+	default:
+		if target != nil && !mysql.HasUnsignedFlag(target.GetFlag()) {
+			return func(val int64, d *types.Datum) error {
+				d.SetInt64(val)
+				return nil
+			}
+		}
+		return func(val int64, d *types.Datum) error {
+			d.SetUint64(uint64(val))
+			return nil
+		}
 	}
-
-	return nil
 }
 
 // newInt96 is a utility function to create a parquet.Int96 for test,
