@@ -153,24 +153,11 @@ func parquetInt32SkipCastInfo(
 		if target.GetType() == mysql.TypeNewDecimal && canSkipDecimalByMeta(converted.decimalMeta, target) {
 			info.checkKind = castCheckDecimal
 		}
-	case schema.ConvertedTypes.Int8:
-		if signedRangeFitsTarget(-1<<7, 1<<7-1, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Int16:
-		if signedRangeFitsTarget(-1<<15, 1<<15-1, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Int32, schema.ConvertedTypes.None:
+	case schema.ConvertedTypes.Int8, schema.ConvertedTypes.Int16,
+		schema.ConvertedTypes.Int32, schema.ConvertedTypes.None,
+		schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16:
+		// Physical type is int32, so the actual value range is always [MinInt32, MaxInt32].
 		if signedRangeFitsTarget(math.MinInt32, math.MaxInt32, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Uint8:
-		if unsignedRangeFitsTarget(math.MaxUint8, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Uint16:
-		if unsignedRangeFitsTarget(math.MaxUint16, target) {
 			info.checkKind = castSkipAlways
 		}
 	}
