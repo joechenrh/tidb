@@ -531,18 +531,18 @@ func (pp *ParquetParser) fillSkipCast(row []types.Datum) {
 	}
 	for i := range row {
 		pc := pp.skipCastPrechecks[i]
-		if row[i].IsNull() && pc.checkKind != skipCheckNoSkip {
+		if row[i].IsNull() && pc.checkKind != castRequired {
 			pp.skipCast[i] = true
 			continue
 		}
 		switch pc.checkKind {
-		case skipCheckNoSkip:
+		case castRequired:
 			pp.skipCast[i] = false
-		case skipCheckUnconditional:
+		case castSkipAlways:
 			pp.skipCast[i] = true
-		case skipCheckString:
+		case castCheckString:
 			pp.skipCast[i] = postCheckString(row[i], pc.targetFlen, pc.encoding)
-		case skipCheckDecimal:
+		case castCheckDecimal:
 			pp.skipCast[i] = postCheckDecimal(row[i], pc.targetFlen, pc.targetDecimal, pc.unsigned)
 		}
 	}

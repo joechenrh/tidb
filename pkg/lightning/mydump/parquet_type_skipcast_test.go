@@ -44,7 +44,7 @@ func TestParquetSkipCastTimestampAlwaysCast(t *testing.T) {
 		[]*model.ColumnInfo{newParquetTargetColumnInfo(mysql.TypeTimestamp, 0, 19, 0, "", "")},
 	)
 	require.Len(t, infos, 1)
-	require.Equal(t, skipCheckNoSkip, infos[0].checkKind)
+	require.Equal(t, castRequired, infos[0].checkKind)
 }
 
 func TestParquetTemporalSetterUsesTargetType(t *testing.T) {
@@ -105,8 +105,8 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 				newParquetTargetColumnInfo(mysql.TypeDouble, 0, 0, 0, "", ""),
 			},
 		)
-		require.Equal(t, skipCheckUnconditional, infos[0].checkKind)
-		require.Equal(t, skipCheckUnconditional, infos[1].checkKind)
+		require.Equal(t, castSkipAlways, infos[0].checkKind)
+		require.Equal(t, castSkipAlways, infos[1].checkKind)
 	})
 
 	t.Run("utf8 string target", func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 				newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "utf8mb4", ""),
 			},
 		)
-		require.Equal(t, skipCheckString, infos[0].checkKind)
+		require.Equal(t, castCheckString, infos[0].checkKind)
 		require.NotNil(t, infos[0].encoding) // utf8mb4 → non-nil encoding
 	})
 
@@ -127,7 +127,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 				newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "binary", ""),
 			},
 		)
-		require.Equal(t, skipCheckString, infos[0].checkKind)
+		require.Equal(t, castCheckString, infos[0].checkKind)
 		require.Nil(t, infos[0].encoding) // binary charset → nil encoding
 	})
 
@@ -146,7 +146,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 				newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "binary", "binary"),
 			},
 		)
-		require.Equal(t, skipCheckDecimal, infos[0].checkKind)
+		require.Equal(t, castCheckDecimal, infos[0].checkKind)
 	})
 
 	t.Run("decimal scale mismatch", func(t *testing.T) {
@@ -164,7 +164,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 				newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "", ""),
 			},
 		)
-		require.Equal(t, skipCheckNoSkip, infos[0].checkKind)
+		require.Equal(t, castRequired, infos[0].checkKind)
 	})
 }
 
@@ -254,56 +254,56 @@ func TestBuildSkipCastPrechecks(t *testing.T) {
 		name       string
 		colType    columnType
 		target     *model.ColumnInfo
-		expectKind skipCheckKind
+		expectKind castDecision
 	}{
 		{"bool to int",
 			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Boolean},
 			newParquetTargetColumnInfo(mysql.TypeLong, 0, 10, 0, "", ""),
-			skipCheckUnconditional},
+			castSkipAlways},
 		{"float to float",
 			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Float},
 			newParquetTargetColumnInfo(mysql.TypeFloat, 0, 12, 0, "", ""),
-			skipCheckUnconditional},
+			castSkipAlways},
 		{"double to double",
 			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Double},
 			newParquetTargetColumnInfo(mysql.TypeDouble, 0, 22, 0, "", ""),
-			skipCheckUnconditional},
+			castSkipAlways},
 		{"int32 date to DATE",
 			columnType{converted: schema.ConvertedTypes.Date, physical: parquet.Types.Int32},
 			newParquetTargetColumnInfo(mysql.TypeDate, 0, 10, 0, "", ""),
-			skipCheckUnconditional},
+			castSkipAlways},
 		{"temporal to TIMESTAMP not eligible",
 			columnType{converted: schema.ConvertedTypes.TimestampMicros, physical: parquet.Types.Int64, IsAdjustedToUTC: true},
 			newParquetTargetColumnInfo(mysql.TypeTimestamp, 0, 19, 0, "", ""),
-			skipCheckNoSkip},
+			castRequired},
 		{"int to YEAR not eligible",
 			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Int32},
 			newParquetTargetColumnInfo(mysql.TypeYear, 0, 4, 0, "", ""),
-			skipCheckNoSkip},
+			castRequired},
 		{"utf8 to VARCHAR utf8mb4",
 			columnType{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray},
 			newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 255, 0, "utf8mb4", "utf8mb4_bin"),
-			skipCheckString},
+			castCheckString},
 		{"utf8 to CHAR utf8mb4",
 			columnType{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray},
 			newParquetTargetColumnInfo(mysql.TypeString, 0, 255, 0, "utf8mb4", "utf8mb4_bin"),
-			skipCheckString},
+			castCheckString},
 		{"bytes to BINARY(M) not eligible",
 			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.ByteArray},
 			newParquetTargetColumnInfo(mysql.TypeString, mysql.BinaryFlag, 10, 0, "binary", "binary"),
-			skipCheckNoSkip},
+			castRequired},
 		{"utf8 to VARBINARY",
 			columnType{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray},
 			newParquetTargetColumnInfo(mysql.TypeVarchar, mysql.BinaryFlag, 255, 0, "binary", "binary"),
-			skipCheckString},
+			castCheckString},
 		{"int32 signed to signed bigint",
 			columnType{converted: schema.ConvertedTypes.Int32, physical: parquet.Types.Int32},
 			newParquetTargetColumnInfo(mysql.TypeLonglong, 0, 20, 0, "", ""),
-			skipCheckUnconditional},
+			castSkipAlways},
 		{"int64 to smallint not eligible (range)",
 			columnType{converted: schema.ConvertedTypes.Int64, physical: parquet.Types.Int64},
 			newParquetTargetColumnInfo(mysql.TypeShort, 0, 6, 0, "", ""),
-			skipCheckNoSkip},
+			castRequired},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
