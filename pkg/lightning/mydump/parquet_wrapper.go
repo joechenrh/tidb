@@ -29,17 +29,8 @@ import (
 	"github.com/pingcap/tidb/pkg/util"
 )
 
-const (
-	// defaultBufSize specifies the default size of skip buffer.
-	// Skip buffer is used when reading data from the cloud. If there is a gap
-	// between the current read position and the last read position, the
-	// data is stored in this buffer to avoid potentially reopening the
-	// underlying file when the gap size is less than the buffer size.
-	defaultBufSize = 64 * 1024
-
-	// Copied from https://github.com/apache/arrow-go/blob/bbf7ab7523a6411e25c7a08566a40e8759cc6c13/parquet/file/row_group_reader.go#L32C1-L34C2
-	maxDictHeaderSize int64 = 100
-)
+// Copied from https://github.com/apache/arrow-go/blob/bbf7ab7523a6411e25c7a08566a40e8759cc6c13/parquet/file/row_group_reader.go#L32C1-L34C2
+const maxDictHeaderSize int64 = 100
 
 var (
 	// rowGroupInMemoryThreshold controls when we preload an entire row group.

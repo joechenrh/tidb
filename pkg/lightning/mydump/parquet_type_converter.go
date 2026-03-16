@@ -50,20 +50,7 @@ type columnSkipCastPrecheck struct {
 	encoding      charset.Encoding // pre-resolved for string columns, nil for binary
 }
 
-var (
-	zeroMyDecimal = types.MyDecimal{}
-
-	unsupportedParquetTypes = map[schema.ConvertedType]struct{}{
-		// TODO(joechenrh): support read list type as vector
-		schema.ConvertedTypes.List: {},
-		// The below types are not used for data exported from aurora/snowflake,
-		// so we don't support them for now.
-		schema.ConvertedTypes.Map:         {},
-		schema.ConvertedTypes.MapKeyValue: {},
-		schema.ConvertedTypes.Interval:    {},
-		schema.ConvertedTypes.NA:          {},
-	}
-)
+var zeroMyDecimal = types.MyDecimal{}
 
 const (
 	// maximumDecimalBytes is the maximum byte length allowed to be parsed directly.

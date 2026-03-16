@@ -40,7 +40,27 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	// defaultBufSize specifies the default size of skip buffer.
+	// Skip buffer is used when reading data from the cloud. If there is a gap
+	// between the current read position and the last read position, these
+	// data is stored in this buffer to avoid potentially reopening the
+	// underlying file when the gap size is less than the buffer size.
+	defaultBufSize = 64 * 1024
+)
+
 var (
+	unsupportedParquetTypes = map[schema.ConvertedType]struct{}{
+		// TODO(joechenrh): support read list type as vector
+		schema.ConvertedTypes.List: {},
+		// The below types are not used for data exported from aurora/snowflake,
+		// so we don't support them for now.
+		schema.ConvertedTypes.Map:         {},
+		schema.ConvertedTypes.MapKeyValue: {},
+		schema.ConvertedTypes.Interval:    {},
+		schema.ConvertedTypes.NA:          {},
+	}
+
 	// readBatchSize is the number of rows to read in a single batch
 	// from parquet column reader. Modified in test.
 	readBatchSize = 128
