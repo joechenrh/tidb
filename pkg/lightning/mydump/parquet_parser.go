@@ -236,7 +236,7 @@ type rowGroupParser struct {
 }
 
 // init creates column iterators for each column.
-func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, targets []*model.ColumnInfo) (err error) {
+func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, prechecks []columnSkipCastPrecheck) (err error) {
 	meta := rgp.readers[0].MetaData()
 	numCols := meta.Schema.NumColumns()
 	rgp.iterators = make([]iterator, numCols)
@@ -254,8 +254,8 @@ func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, targe
 	for idx := range numCols {
 		tp := meta.Schema.Column(idx).PhysicalType()
 		var target *model.ColumnInfo
-		if idx < len(targets) {
-			target = targets[idx]
+		if idx < len(prechecks) {
+			target = prechecks[idx].target
 		}
 		iter := createColumnIterator(tp, &colTypes[idx], loc, target, readBatchSize)
 		if iter == nil {
@@ -311,7 +311,6 @@ type ParquetParser struct {
 	colTypes []columnType
 	colNames []string
 
-	targetCols        []*model.ColumnInfo
 	skipCastPrechecks []columnSkipCastPrecheck
 	skipCast          []bool
 
@@ -405,7 +404,7 @@ func (pp *ParquetParser) buildRowGroupParser() (err error) {
 		rowGroup: pp.curRowGroup,
 		readers:  readers,
 	}
-	if err := rgp.init(pp.colTypes, pp.loc, pp.targetCols); err != nil {
+	if err := rgp.init(pp.colTypes, pp.loc, pp.skipCastPrechecks); err != nil {
 		return errors.Trace(err)
 	}
 	pp.rowGroup = rgp
@@ -534,15 +533,7 @@ func (pp *ParquetParser) fillSkipCast(row []types.Datum) {
 	if pp.skipCastPrechecks == nil {
 		return
 	}
-	if cap(pp.skipCast) < len(row) {
-		pp.skipCast = make([]bool, len(row))
-	}
-	pp.skipCast = pp.skipCast[:len(row)]
 	for i := range row {
-		if i >= len(pp.skipCastPrechecks) {
-			pp.skipCast[i] = false
-			continue
-		}
 		pc := pp.skipCastPrechecks[i]
 		if pc.checkKind == skipCheckNoSkip {
 			pp.skipCast[i] = false
@@ -711,8 +702,8 @@ func NewParquetParser(
 		colTypes: colTypes,
 		colNames: colNames,
 
-		targetCols:        meta.TargetColumns,
 		skipCastPrechecks: skipCastPrechecks,
+		skipCast:          make([]bool, numColumns),
 		ctx:               ctx,
 		store:             store,
 		path:              path,

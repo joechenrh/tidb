@@ -42,6 +42,7 @@ const (
 )
 
 type columnSkipCastPrecheck struct {
+	target        *model.ColumnInfo
 	checkKind     skipCheckKind
 	targetFlen    int
 	targetDecimal int
@@ -77,6 +78,7 @@ func parquetColumnPrecheck(
 	target *model.ColumnInfo,
 ) columnSkipCastPrecheck {
 	info := columnSkipCastPrecheck{
+		target:        target,
 		targetFlen:    target.GetFlen(),
 		targetDecimal: target.GetDecimal(),
 		unsigned:      mysql.HasUnsignedFlag(target.GetFlag()),
@@ -756,13 +758,14 @@ func postCheckString(val types.Datum, targetFlen int, enc charset.Encoding) bool
 	if targetFlen == types.UnspecifiedLength || len(b) <= targetFlen {
 		return true
 	}
-	if enc != nil {
-		// For non-binary charsets, flen is character count.
-		// CastColumnValue uses utf8.RuneCountInString for all non-BLOB string types
-		// regardless of charset (see ProduceStrWithSpecifiedTp in datum.go:1258-1259).
-		return utf8.RuneCount(b) <= targetFlen
+	if enc == nil {
+		// For binary charset (VARBINARY), flen is byte count — already checked above.
+		return false
 	}
-	return true
+	// For non-binary charsets, flen is character count.
+	// CastColumnValue uses utf8.RuneCountInString for all non-BLOB string types
+	// regardless of charset (see ProduceStrWithSpecifiedTp in datum.go:1258-1259).
+	return utf8.RuneCount(b) <= targetFlen
 }
 
 func postCheckDecimal(val types.Datum, targetFlen int, targetDecimal int, unsigned bool) bool {
