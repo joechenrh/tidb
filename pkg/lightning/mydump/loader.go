@@ -27,6 +27,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/pkg/lightning/common"
+	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/lightning/config"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/lightning/metric"
@@ -93,10 +94,12 @@ type MDTableMeta struct {
 	IsRowOrdered bool
 }
 
-// ParquetFileMeta contains some analyzed metadata for a parquet file by MyDumper Loader.
+// ParquetFileMeta holds runtime-only configuration for parquet parsing.
+// Fields are populated at execution time and are NOT persisted across subtasks.
 type ParquetFileMeta struct {
-	allocator memory.Allocator
-	Loc       *time.Location
+	allocator     memory.Allocator
+	Loc           *time.Location
+	TargetColumns []*model.ColumnInfo
 }
 
 // SourceFileMeta contains some analyzed metadata for a source file by MyDumper Loader.

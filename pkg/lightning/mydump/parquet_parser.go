@@ -648,7 +648,6 @@ func NewParquetParser(
 	r storeapi.ReadSeekCloser,
 	path string,
 	meta ParquetFileMeta,
-	targetColumns []*model.ColumnInfo,
 ) (*ParquetParser, error) {
 	logger := log.Wrap(logutil.Logger(ctx))
 	wrapper := &parquetWrapper{ReadSeekCloser: r}
@@ -679,7 +678,7 @@ func NewParquetParser(
 	for i := range physicalTypes {
 		physicalTypes[i] = fileMeta.Schema.Column(i).PhysicalType()
 	}
-	skipCastPrechecks := buildSkipCastPrechecks(colTypes, physicalTypes, targetColumns)
+	skipCastPrechecks := buildSkipCastPrechecks(colTypes, physicalTypes, meta.TargetColumns)
 
 	numColumns := len(colTypes)
 	pool := zeropool.New(func() []types.Datum {
@@ -692,7 +691,7 @@ func NewParquetParser(
 		colNames: colNames,
 
 		physicalTypes:     physicalTypes,
-		targetCols:        targetColumns,
+		targetCols:        meta.TargetColumns,
 		skipCastPrechecks: skipCastPrechecks,
 		ctx:               ctx,
 		store:             store,
@@ -724,7 +723,7 @@ func SampleStatisticsFromParquet(
 		return 0, 0, err
 	}
 
-	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{}, nil)
+	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{})
 	if err != nil {
 		return 0, 0, err
 	}
@@ -871,7 +870,7 @@ func EstimateParquetReaderMemory(
 	}
 
 	allocator := &trackingAllocator{}
-	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{allocator: allocator}, nil)
+	parser, err := NewParquetParser(ctx, store, r, path, ParquetFileMeta{allocator: allocator})
 	if err != nil {
 		_ = r.Close()
 		return 0, err

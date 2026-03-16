@@ -28,6 +28,7 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/checkpoints"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/lightning/mydump"
+	"github.com/pingcap/tidb/pkg/meta/model"
 	verify "github.com/pingcap/tidb/pkg/lightning/verification"
 	"github.com/pingcap/tidb/pkg/resourcegroup"
 	"github.com/pingcap/tidb/pkg/sessionctx"
@@ -69,8 +70,13 @@ func (e *importMinimalTaskExecutor) Run(
 	sharedVars := e.mTtask.SharedVars
 
 	chunkCheckpoint := toChunkCheckpoint(e.mTtask.Chunk)
+	targetCols := make([]*model.ColumnInfo, len(sharedVars.TableImporter.InsertColumns))
+	for i, col := range sharedVars.TableImporter.InsertColumns {
+		targetCols[i] = col.ToInfo()
+	}
 	chunkCheckpoint.FileMeta.ParquetMeta = mydump.ParquetFileMeta{
-		Loc: sharedVars.TableImporter.Location,
+		Loc:           sharedVars.TableImporter.Location,
+		TargetColumns: targetCols,
 	}
 
 	checksum := verify.NewKVGroupChecksumWithKeyspace(sharedVars.TableImporter.GetKeySpace())
