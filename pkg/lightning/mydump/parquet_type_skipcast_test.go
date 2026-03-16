@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/schema"
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/parser/charset"
@@ -39,21 +38,25 @@ func newParquetTargetColumnInfo(tp byte, flag uint, flen int, decimal int, chars
 }
 
 func TestParquetSkipCastTimestampAlwaysCast(t *testing.T) {
-	infos := buildSkipCastPrechecks(
-		[]columnType{{converted: schema.ConvertedTypes.TimestampMicros, physical: parquet.Types.Int64, IsAdjustedToUTC: true}},
-		[]*model.ColumnInfo{newParquetTargetColumnInfo(mysql.TypeTimestamp, 0, 19, 0, "", "")},
-	)
-	require.Len(t, infos, 1)
-	require.Equal(t, castRequired, infos[0].checkKind)
+	// TimestampMicros targeting mysql.TypeTimestamp should return canSkip=false
+	converted := &columnType{converted: schema.ConvertedTypes.TimestampMicros, IsAdjustedToUTC: true}
+	target := newParquetTargetColumnInfo(mysql.TypeTimestamp, 0, 19, 0, "", "")
+	setter := getInt64Setter(converted, time.UTC, target)
+	var datum types.Datum
+	canSkip, err := setter(0, &datum)
+	require.NoError(t, err)
+	require.False(t, canSkip)
 }
 
 func TestParquetTemporalSetterUsesTargetType(t *testing.T) {
-	converted := columnType{converted: schema.ConvertedTypes.TimeMicros, IsAdjustedToUTC: true}
+	converted := &columnType{converted: schema.ConvertedTypes.TimeMicros, IsAdjustedToUTC: true}
 	target := newParquetTargetColumnInfo(mysql.TypeDate, 0, 0, 0, "", "")
 
-	setter := getInt64Setter(&converted, time.UTC, target)
+	setter := getInt64Setter(converted, time.UTC, target)
 	var datum types.Datum
-	require.NoError(t, setter(0, &datum))
+	canSkip, err := setter(0, &datum)
+	require.NoError(t, err)
+	require.True(t, canSkip)
 	require.Equal(t, types.KindMysqlTime, datum.Kind())
 	require.Equal(t, mysql.TypeDate, datum.GetMysqlTime().Type())
 }
@@ -95,116 +98,131 @@ func TestSetTemporalDatumTruncation(t *testing.T) {
 
 func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 	t.Run("float and double", func(t *testing.T) {
-		infos := buildSkipCastPrechecks(
-			[]columnType{
-				{converted: schema.ConvertedTypes.None, physical: parquet.Types.Float},
-				{converted: schema.ConvertedTypes.None, physical: parquet.Types.Double},
-			},
-			[]*model.ColumnInfo{
-				newParquetTargetColumnInfo(mysql.TypeFloat, 0, 0, 0, "", ""),
-				newParquetTargetColumnInfo(mysql.TypeDouble, 0, 0, 0, "", ""),
-			},
-		)
-		require.Equal(t, castSkipAlways, infos[0].checkKind)
-		require.Equal(t, castSkipAlways, infos[1].checkKind)
+		floatTarget := newParquetTargetColumnInfo(mysql.TypeFloat, 0, 0, 0, "", "")
+		doubleTarget := newParquetTargetColumnInfo(mysql.TypeDouble, 0, 0, 0, "", "")
+
+		floatSetter := getFloat32Setter(floatTarget)
+		var d types.Datum
+		canSkip, err := floatSetter(1.5, &d)
+		require.NoError(t, err)
+		require.True(t, canSkip)
+
+		doubleSetter := getFloat64Setter(doubleTarget)
+		canSkip, err = doubleSetter(2.5, &d)
+		require.NoError(t, err)
+		require.True(t, canSkip)
 	})
 
 	t.Run("utf8 string target", func(t *testing.T) {
-		infos := buildSkipCastPrechecks(
-			[]columnType{{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray}},
-			[]*model.ColumnInfo{
-				newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "utf8mb4", ""),
-			},
-		)
-		require.Equal(t, castCheckString, infos[0].checkKind)
-		require.NotNil(t, infos[0].encoding) // utf8mb4 → non-nil encoding
+		converted := &columnType{converted: schema.ConvertedTypes.UTF8}
+		target := newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "utf8mb4", "")
+
+		setter := getByteArraySetter(converted, target)
+		var d types.Datum
+		canSkip, err := setter([]byte("hello"), &d)
+		require.NoError(t, err)
+		require.True(t, canSkip)
 	})
 
 	t.Run("varbinary target (binary charset)", func(t *testing.T) {
-		infos := buildSkipCastPrechecks(
-			[]columnType{{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray}},
-			[]*model.ColumnInfo{
-				newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "binary", ""),
-			},
-		)
-		require.Equal(t, castCheckString, infos[0].checkKind)
-		require.Nil(t, infos[0].encoding) // binary charset → nil encoding
+		converted := &columnType{converted: schema.ConvertedTypes.UTF8}
+		target := newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "binary", "")
+
+		setter := getByteArraySetter(converted, target)
+		var d types.Datum
+		canSkip, err := setter([]byte("hello"), &d)
+		require.NoError(t, err)
+		require.True(t, canSkip)
 	})
 
 	t.Run("decimal byte array", func(t *testing.T) {
-		infos := buildSkipCastPrechecks(
-			[]columnType{{
-				converted: schema.ConvertedTypes.Decimal,
-				physical:  parquet.Types.ByteArray,
-				decimalMeta: schema.DecimalMetadata{
-					IsSet:     true,
-					Precision: 5,
-					Scale:     2,
-				},
-			}},
-			[]*model.ColumnInfo{
-				newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "binary", "binary"),
+		converted := &columnType{
+			converted: schema.ConvertedTypes.Decimal,
+			decimalMeta: schema.DecimalMetadata{
+				IsSet:     true,
+				Precision: 5,
+				Scale:     2,
 			},
-		)
-		require.Equal(t, castCheckDecimal, infos[0].checkKind)
+		}
+		target := newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "binary", "binary")
+
+		setter := getByteArraySetter(converted, target)
+		require.NotNil(t, setter)
+		// A small positive decimal: 1.23 = 123 in 2's complement = [0x00, 0x7B]
+		var d types.Datum
+		canSkip, err := setter([]byte{0x00, 0x7B}, &d)
+		require.NoError(t, err)
+		require.True(t, canSkip)
 	})
 
 	t.Run("decimal scale mismatch", func(t *testing.T) {
-		infos := buildSkipCastPrechecks(
-			[]columnType{{
-				converted: schema.ConvertedTypes.Decimal,
-				physical:  parquet.Types.FixedLenByteArray,
-				decimalMeta: schema.DecimalMetadata{
-					IsSet:     true,
-					Precision: 5,
-					Scale:     3,
-				},
-			}},
-			[]*model.ColumnInfo{
-				newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "", ""),
+		converted := &columnType{
+			converted: schema.ConvertedTypes.Decimal,
+			decimalMeta: schema.DecimalMetadata{
+				IsSet:     true,
+				Precision: 5,
+				Scale:     3,
 			},
-		)
-		require.Equal(t, castRequired, infos[0].checkKind)
+		}
+		target := newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "", "")
+
+		setter := getFixedLenByteArraySetter(converted, target)
+		require.NotNil(t, setter)
+		// decimalCanSkipCast fails → always returns false
+		var d types.Datum
+		canSkip, err := setter([]byte{0x00, 0x7B}, &d)
+		require.NoError(t, err)
+		require.False(t, canSkip)
 	})
 }
 
 func TestIntSetterSignedness(t *testing.T) {
-	t.Run("INT64 Uint8 to signed target emits KindInt64", func(t *testing.T) {
+	t.Run("INT64 Uint8 to signed target: cross-sign, no range check", func(t *testing.T) {
 		converted := &columnType{converted: schema.ConvertedTypes.Uint8}
 		target := newParquetTargetColumnInfo(mysql.TypeShort, 0, 6, 0, "", "")
 		setter := getInt64Setter(converted, time.UTC, target)
 		var d types.Datum
-		require.NoError(t, setter(200, &d))
-		require.Equal(t, types.KindInt64, d.Kind())
-		require.Equal(t, int64(200), d.GetInt64())
-	})
-
-	t.Run("INT64 Uint8 to unsigned target emits KindUint64", func(t *testing.T) {
-		converted := &columnType{converted: schema.ConvertedTypes.Uint8}
-		target := newParquetTargetColumnInfo(mysql.TypeShort, mysql.UnsignedFlag, 6, 0, "", "")
-		setter := getInt64Setter(converted, time.UTC, target)
-		var d types.Datum
-		require.NoError(t, setter(200, &d))
+		canSkip, err := setter(200, &d)
+		require.NoError(t, err)
+		require.False(t, canSkip)
+		// fromUnsigned=true → SetUint64 in fallback
 		require.Equal(t, types.KindUint64, d.Kind())
 		require.Equal(t, uint64(200), d.GetUint64())
 	})
 
-	t.Run("INT32 signed to unsigned target emits KindUint64", func(t *testing.T) {
+	t.Run("INT64 Uint8 to unsigned target: same-sign, range check", func(t *testing.T) {
+		converted := &columnType{converted: schema.ConvertedTypes.Uint8}
+		target := newParquetTargetColumnInfo(mysql.TypeShort, mysql.UnsignedFlag, 6, 0, "", "")
+		setter := getInt64Setter(converted, time.UTC, target)
+		var d types.Datum
+		canSkip, err := setter(200, &d)
+		require.NoError(t, err)
+		require.True(t, canSkip) // 200 fits in SMALLINT UNSIGNED
+		require.Equal(t, types.KindUint64, d.Kind())
+		require.Equal(t, uint64(200), d.GetUint64())
+	})
+
+	t.Run("INT32 signed to unsigned target: cross-sign, no range check", func(t *testing.T) {
 		converted := &columnType{converted: schema.ConvertedTypes.Int32}
 		target := newParquetTargetColumnInfo(mysql.TypeLong, mysql.UnsignedFlag, 10, 0, "", "")
 		setter := getInt32Setter(converted, time.UTC, target)
 		var d types.Datum
-		require.NoError(t, setter(42, &d))
-		require.Equal(t, types.KindUint64, d.Kind())
-		require.Equal(t, uint64(42), d.GetUint64())
+		canSkip, err := setter(42, &d)
+		require.NoError(t, err)
+		require.False(t, canSkip)
+		// fromUnsigned=false → SetInt64 in fallback
+		require.Equal(t, types.KindInt64, d.Kind())
+		require.Equal(t, int64(42), d.GetInt64())
 	})
 
-	t.Run("INT32 signed to signed target emits KindInt64", func(t *testing.T) {
+	t.Run("INT32 signed to signed target: same-sign, range check", func(t *testing.T) {
 		converted := &columnType{converted: schema.ConvertedTypes.Int32}
 		target := newParquetTargetColumnInfo(mysql.TypeLong, 0, 10, 0, "", "")
 		setter := getInt32Setter(converted, time.UTC, target)
 		var d types.Datum
-		require.NoError(t, setter(-42, &d))
+		canSkip, err := setter(-42, &d)
+		require.NoError(t, err)
+		require.True(t, canSkip) // -42 fits in INT signed
 		require.Equal(t, types.KindInt64, d.Kind())
 		require.Equal(t, int64(-42), d.GetInt64())
 	})
@@ -233,14 +251,16 @@ func TestStringPostCheck(t *testing.T) {
 		require.False(t, postCheckString(d, 100, utf8Enc))
 	})
 
-	t.Run("varbinary nil encoding accepts any bytes", func(t *testing.T) {
+	t.Run("varbinary accepts any bytes", func(t *testing.T) {
+		binEnc := charset.FindEncoding("binary")
 		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.True(t, postCheckString(d, 100, nil))
+		require.True(t, postCheckString(d, 100, binEnc))
 	})
 
 	t.Run("varbinary exceeds byte length", func(t *testing.T) {
+		binEnc := charset.FindEncoding("binary")
 		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.False(t, postCheckString(d, 2, nil))
+		require.False(t, postCheckString(d, 2, binEnc))
 	})
 
 	t.Run("negative flen means unlimited", func(t *testing.T) {
@@ -251,67 +271,119 @@ func TestStringPostCheck(t *testing.T) {
 
 func TestBuildSkipCastPrechecks(t *testing.T) {
 	cases := []struct {
-		name       string
-		colType    columnType
-		target     *model.ColumnInfo
-		expectKind castDecision
+		name           string
+		getSetter      func(target *model.ColumnInfo) func() (bool, error)
+		target         *model.ColumnInfo
+		expectCanSkip  bool
 	}{
 		{"bool to int",
-			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Boolean},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				s := getBoolSetter(target)
+				return func() (bool, error) { return s(true, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeLong, 0, 10, 0, "", ""),
-			castSkipAlways},
+			true},
 		{"float to float",
-			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Float},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				s := getFloat32Setter(target)
+				return func() (bool, error) { return s(1.0, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeFloat, 0, 12, 0, "", ""),
-			castSkipAlways},
+			true},
 		{"double to double",
-			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Double},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				s := getFloat64Setter(target)
+				return func() (bool, error) { return s(1.0, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeDouble, 0, 22, 0, "", ""),
-			castSkipAlways},
+			true},
 		{"int32 date to DATE",
-			columnType{converted: schema.ConvertedTypes.Date, physical: parquet.Types.Int32},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.Date}
+				s := getInt32Setter(converted, time.UTC, target)
+				return func() (bool, error) { return s(0, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeDate, 0, 10, 0, "", ""),
-			castSkipAlways},
+			true},
 		{"temporal to TIMESTAMP not eligible",
-			columnType{converted: schema.ConvertedTypes.TimestampMicros, physical: parquet.Types.Int64, IsAdjustedToUTC: true},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.TimestampMicros, IsAdjustedToUTC: true}
+				s := getInt64Setter(converted, time.UTC, target)
+				return func() (bool, error) { return s(0, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeTimestamp, 0, 19, 0, "", ""),
-			castRequired},
+			false},
 		{"int to YEAR not eligible",
-			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.Int32},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.None}
+				s := getInt32Setter(converted, time.UTC, target)
+				return func() (bool, error) { return s(0, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeYear, 0, 4, 0, "", ""),
-			castRequired},
+			false},
 		{"utf8 to VARCHAR utf8mb4",
-			columnType{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.UTF8}
+				s := getByteArraySetter(converted, target)
+				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 255, 0, "utf8mb4", "utf8mb4_bin"),
-			castCheckString},
+			true},
 		{"utf8 to CHAR utf8mb4",
-			columnType{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.UTF8}
+				s := getByteArraySetter(converted, target)
+				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeString, 0, 255, 0, "utf8mb4", "utf8mb4_bin"),
-			castCheckString},
+			true},
 		{"bytes to BINARY(M) not eligible",
-			columnType{converted: schema.ConvertedTypes.None, physical: parquet.Types.ByteArray},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.None}
+				s := getByteArraySetter(converted, target)
+				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeString, mysql.BinaryFlag, 10, 0, "binary", "binary"),
-			castRequired},
+			false},
 		{"utf8 to VARBINARY",
-			columnType{converted: schema.ConvertedTypes.UTF8, physical: parquet.Types.ByteArray},
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.UTF8}
+				s := getByteArraySetter(converted, target)
+				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeVarchar, mysql.BinaryFlag, 255, 0, "binary", "binary"),
-			castCheckString},
-		{"int32 signed to signed bigint",
-			columnType{converted: schema.ConvertedTypes.Int32, physical: parquet.Types.Int32},
+			true},
+		{"int32 signed default to signed bigint fits",
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.Int32}
+				s := getInt32Setter(converted, time.UTC, target)
+				return func() (bool, error) { return s(42, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeLonglong, 0, 20, 0, "", ""),
-			castSkipAlways},
-		{"int64 to smallint not eligible (range)",
-			columnType{converted: schema.ConvertedTypes.Int64, physical: parquet.Types.Int64},
+			true},
+		{"int64 signed to smallint signed fits",
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.Int64}
+				s := getInt64Setter(converted, time.UTC, target)
+				return func() (bool, error) { return s(42, &types.Datum{}) }
+			},
 			newParquetTargetColumnInfo(mysql.TypeShort, 0, 6, 0, "", ""),
-			castRequired},
+			true},
+		{"int64 signed to smallint signed overflow",
+			func(target *model.ColumnInfo) func() (bool, error) {
+				converted := &columnType{converted: schema.ConvertedTypes.Int64}
+				s := getInt64Setter(converted, time.UTC, target)
+				return func() (bool, error) { return s(40000, &types.Datum{}) }
+			},
+			newParquetTargetColumnInfo(mysql.TypeShort, 0, 6, 0, "", ""),
+			false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			infos := buildSkipCastPrechecks(
-				[]columnType{tc.colType},
-				[]*model.ColumnInfo{tc.target},
-			)
-			require.Equal(t, tc.expectKind, infos[0].checkKind)
+			fn := tc.getSetter(tc.target)
+			canSkip, err := fn()
+			require.NoError(t, err)
+			require.Equal(t, tc.expectCanSkip, canSkip)
 		})
 	}
 }

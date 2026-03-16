@@ -90,7 +90,7 @@ type innerReader[T parquet.ColumnTypes] interface {
 type iterator interface {
 	SetReader(colReader file.ColumnChunkReader)
 
-	Next(*types.Datum) error
+	Next(*types.Datum) (bool, error)
 
 	Close() error
 }
@@ -160,14 +160,14 @@ func (it *columnIterator[T, R]) readNextBatch() error {
 }
 
 // Next reads the next value with proper level handling.
-func (it *columnIterator[T, R]) Next(d *types.Datum) error {
+func (it *columnIterator[T, R]) Next(d *types.Datum) (bool, error) {
 	if it.levelOffset == it.levelsBuffered {
 		err := it.readNextBatch()
 		if err != nil {
-			return errors.Trace(err)
+			return false, errors.Trace(err)
 		}
 		if it.levelsBuffered == 0 {
-			return io.EOF
+			return false, io.EOF
 		}
 	}
 
@@ -177,7 +177,7 @@ func (it *columnIterator[T, R]) Next(d *types.Datum) error {
 
 	if defLevel < it.baseReader.Descriptor().MaxDefinitionLevel() {
 		d.SetNull()
-		return nil
+		return true, nil
 	}
 
 	value := it.values[it.valueOffset]
@@ -194,21 +194,21 @@ func createColumnIterator(
 ) iterator {
 	switch tp {
 	case parquet.Types.Boolean:
-		return newColumnIterator[bool, *file.BooleanColumnChunkReader](batchSize, getBoolDataSetter)
+		return newColumnIterator[bool, *file.BooleanColumnChunkReader](batchSize, getBoolSetter(target))
 	case parquet.Types.Int32:
 		return newColumnIterator[int32, *file.Int32ColumnChunkReader](batchSize, getInt32Setter(converted, loc, target))
 	case parquet.Types.Int64:
 		return newColumnIterator[int64, *file.Int64ColumnChunkReader](batchSize, getInt64Setter(converted, loc, target))
 	case parquet.Types.Float:
-		return newColumnIterator[float32, *file.Float32ColumnChunkReader](batchSize, setFloat32Data)
+		return newColumnIterator[float32, *file.Float32ColumnChunkReader](batchSize, getFloat32Setter(target))
 	case parquet.Types.Double:
-		return newColumnIterator[float64, *file.Float64ColumnChunkReader](batchSize, setFloat64Data)
+		return newColumnIterator[float64, *file.Float64ColumnChunkReader](batchSize, getFloat64Setter(target))
 	case parquet.Types.Int96:
 		return newColumnIterator[parquet.Int96, *file.Int96ColumnChunkReader](batchSize, getInt96Setter(converted, loc, target))
 	case parquet.Types.ByteArray:
-		return newColumnIterator[parquet.ByteArray, *file.ByteArrayColumnChunkReader](batchSize, getByteArraySetter(converted))
+		return newColumnIterator[parquet.ByteArray, *file.ByteArrayColumnChunkReader](batchSize, getByteArraySetter(converted, target))
 	case parquet.Types.FixedLenByteArray:
-		return newColumnIterator[parquet.FixedLenByteArray, *file.FixedLenByteArrayColumnChunkReader](batchSize, getFixedLenByteArraySetter(converted))
+		return newColumnIterator[parquet.FixedLenByteArray, *file.FixedLenByteArrayColumnChunkReader](batchSize, getFixedLenByteArraySetter(converted, target))
 	default:
 		return nil
 	}
@@ -236,7 +236,7 @@ type rowGroupParser struct {
 }
 
 // init creates column iterators for each column.
-func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, prechecks []columnSkipCastPrecheck) (err error) {
+func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, targetCols []*model.ColumnInfo) (err error) {
 	meta := rgp.readers[0].MetaData()
 	numCols := len(colTypes)
 	rgp.iterators = make([]iterator, numCols)
@@ -253,7 +253,11 @@ func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, prech
 
 	for idx := range numCols {
 		tp := meta.Schema.Column(idx).PhysicalType()
-		iter := createColumnIterator(tp, &colTypes[idx], loc, prechecks[idx].target, readBatchSize)
+		var target *model.ColumnInfo
+		if targetCols != nil {
+			target = targetCols[idx]
+		}
+		iter := createColumnIterator(tp, &colTypes[idx], loc, target, readBatchSize)
 		if iter == nil {
 			return errors.Errorf("unsupported parquet type %s", tp.String())
 		}
@@ -274,13 +278,14 @@ func (rgp *rowGroupParser) isDone() bool {
 	return rgp == nil || rgp.readRows == rgp.totalRows
 }
 
-func (rgp *rowGroupParser) readRow(row []types.Datum) error {
+func (rgp *rowGroupParser) readRow(row []types.Datum, skipCast []bool) (err error) {
 	if rgp.isDone() {
 		return io.EOF
 	}
 
 	for col, iter := range rgp.iterators {
-		if err := iter.Next(&row[col]); err != nil {
+		skipCast[col], err = iter.Next(&row[col])
+		if err != nil {
 			return errors.Annotate(err, "parquet read column failed")
 		}
 	}
@@ -307,8 +312,8 @@ type ParquetParser struct {
 	colTypes []columnType
 	colNames []string
 
-	skipCastPrechecks []columnSkipCastPrecheck
-	skipCast          []bool
+	targetCols []*model.ColumnInfo
+	skipCast   []bool
 
 	ctx   context.Context
 	store storeapi.Storage
@@ -400,7 +405,7 @@ func (pp *ParquetParser) buildRowGroupParser() (err error) {
 		rowGroup: pp.curRowGroup,
 		readers:  readers,
 	}
-	if err := rgp.init(pp.colTypes, pp.loc, pp.skipCastPrechecks); err != nil {
+	if err := rgp.init(pp.colTypes, pp.loc, pp.targetCols); err != nil {
 		return errors.Trace(err)
 	}
 	pp.rowGroup = rgp
@@ -465,7 +470,7 @@ func (pp *ParquetParser) readSingleRow(row []types.Datum) error {
 		}
 	}
 
-	if err := pp.rowGroup.readRow(row); err != nil {
+	if err := pp.rowGroup.readRow(row, pp.skipCast); err != nil {
 		return err
 	}
 
@@ -525,29 +530,6 @@ func (pp *ParquetParser) Close() error {
 	return onceErr.Get()
 }
 
-func (pp *ParquetParser) fillSkipCast(row []types.Datum) {
-	if pp.skipCastPrechecks == nil {
-		return
-	}
-	for i := range row {
-		pc := pp.skipCastPrechecks[i]
-		if row[i].IsNull() && pc.checkKind != castRequired {
-			pp.skipCast[i] = true
-			continue
-		}
-		switch pc.checkKind {
-		case castRequired:
-			pp.skipCast[i] = false
-		case castSkipAlways:
-			pp.skipCast[i] = true
-		case castCheckString:
-			pp.skipCast[i] = postCheckString(row[i], pc.targetFlen, pc.encoding)
-		case castCheckDecimal:
-			pp.skipCast[i] = postCheckDecimal(row[i], pc.targetFlen, pc.targetDecimal, pc.unsigned)
-		}
-	}
-}
-
 // ReadRow reads a row in the parquet file by the parser.
 // The read data is shallow copied from the internal buffer of parquet reader,
 // so it's only valid before the next ReadRow call.
@@ -563,7 +545,6 @@ func (pp *ParquetParser) ReadRow() error {
 
 	pp.lastRow.Row = row
 	pp.lastRow.Length = estimateRowSize(row)
-	pp.fillSkipCast(row)
 	pp.lastRow.SkipCast = pp.skipCast
 	return nil
 }
@@ -700,10 +681,12 @@ func NewParquetParser(
 		alloc:    allocator,
 		logger:   logger,
 		rowPool:  &pool,
+		skipCast: make([]bool, numColumns),
 	}
 	if meta.TargetColumns != nil {
-		parser.skipCastPrechecks = buildSkipCastPrechecks(colTypes, meta.TargetColumns)
-		parser.skipCast = make([]bool, numColumns)
+		parser.targetCols = meta.TargetColumns
+	} else {
+		parser.targetCols = make([]*model.ColumnInfo, numColumns)
 	}
 	if err := parser.Init(meta.Loc); err != nil {
 		return nil, errors.Trace(err)

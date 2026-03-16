@@ -17,6 +17,7 @@ package mydump
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math/big"
@@ -36,6 +37,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newInt96 creates a parquet.Int96 from microseconds since Unix epoch (test helper).
+func newInt96(microseconds int64) parquet.Int96 {
+	day := uint32(microseconds/(86400*1e6) + 2440588)
+	nanoOfDay := uint64(microseconds % (86400 * 1e6) * 1e3)
+	var b [12]byte
+	binary.LittleEndian.PutUint64(b[:8], nanoOfDay)
+	binary.LittleEndian.PutUint32(b[8:], day)
+	return parquet.Int96(b)
+}
 
 func newParquetParserForTest(
 	ctx context.Context,
@@ -105,7 +116,7 @@ func TestParquetParser(t *testing.T) {
 	verifyRow := func(i int) {
 		require.Equal(t, int64(i+1), reader.lastRow.RowID)
 		require.Len(t, reader.lastRow.Row, 2)
-		require.Equal(t, types.NewCollationStringDatum(strconv.Itoa(i), "utf8mb4_bin"), reader.lastRow.Row[0])
+		require.Equal(t, types.NewCollationStringDatum(strconv.Itoa(i), "binary"), reader.lastRow.Row[0])
 		require.Equal(t, types.NewIntDatum(int64(i)), reader.lastRow.Row[1])
 	}
 
