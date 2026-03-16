@@ -289,8 +289,8 @@ type ParquetParser struct {
 	colTypes []convertedType
 	colNames []string
 
-	physicalTypes []parquet.Type
-	targetCols    []*model.ColumnInfo
+	physicalTypes     []parquet.Type
+	targetCols        []*model.ColumnInfo
 	skipCastPrechecks []columnSkipCastPrecheck
 	skipCast          []bool
 
@@ -671,16 +671,16 @@ func NewParquetParser(
 		colTypes: colTypes,
 		colNames: colNames,
 
-		physicalTypes: physicalTypes,
-		targetCols:    targetColumns,
+		physicalTypes:     physicalTypes,
+		targetCols:        targetColumns,
 		skipCastPrechecks: skipCastPrechecks,
-		ctx:           ctx,
-		store:         store,
-		path:          path,
-		prop:          prop,
-		alloc:         allocator,
-		logger:        logger,
-		rowPool:       &pool,
+		ctx:               ctx,
+		store:             store,
+		path:              path,
+		prop:              prop,
+		alloc:             allocator,
+		logger:            logger,
+		rowPool:           &pool,
 	}
 	if err := parser.Init(meta.Loc); err != nil {
 		return nil, errors.Trace(err)
