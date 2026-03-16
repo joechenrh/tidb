@@ -253,11 +253,7 @@ func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, prech
 
 	for idx := range numCols {
 		tp := meta.Schema.Column(idx).PhysicalType()
-		var target *model.ColumnInfo
-		if idx < len(prechecks) {
-			target = prechecks[idx].target
-		}
-		iter := createColumnIterator(tp, &colTypes[idx], loc, target, readBatchSize)
+		iter := createColumnIterator(tp, &colTypes[idx], loc, prechecks[idx].target, readBatchSize)
 		if iter == nil {
 			return errors.Errorf("unsupported parquet type %s", tp.String())
 		}
