@@ -178,24 +178,13 @@ func parquetInt64SkipCastInfo(
 		if target.GetType() == mysql.TypeNewDecimal && canSkipDecimalByMeta(converted.decimalMeta, target) {
 			info.checkKind = castCheckDecimal
 		}
-	case schema.ConvertedTypes.Int64, schema.ConvertedTypes.None:
+	case schema.ConvertedTypes.Int8, schema.ConvertedTypes.Int16,
+		schema.ConvertedTypes.Int32, schema.ConvertedTypes.Int64,
+		schema.ConvertedTypes.None,
+		schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16,
+		schema.ConvertedTypes.Uint32, schema.ConvertedTypes.Uint64:
+		// Physical type is int64; use full signed range for conservative check.
 		if signedRangeFitsTarget(math.MinInt64, math.MaxInt64, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Uint8:
-		if unsignedRangeFitsTarget(math.MaxUint8, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Uint16:
-		if unsignedRangeFitsTarget(math.MaxUint16, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Uint32:
-		if unsignedRangeFitsTarget(math.MaxUint32, target) {
-			info.checkKind = castSkipAlways
-		}
-	case schema.ConvertedTypes.Uint64:
-		if unsignedRangeFitsTarget(math.MaxUint64, target) {
 			info.checkKind = castSkipAlways
 		}
 	}
@@ -215,18 +204,6 @@ func signedRangeFitsTarget(sourceMin int64, sourceMax int64, target *model.Colum
 	}
 	minValue, maxValue, ok := signedIntTypeRange(target.GetType())
 	return ok && sourceMin >= minValue && sourceMax <= maxValue
-}
-
-func unsignedRangeFitsTarget(sourceMax uint64, target *model.ColumnInfo) bool {
-	if !isIntegerType(target.GetType()) {
-		return false
-	}
-	if mysql.HasUnsignedFlag(target.GetFlag()) {
-		_, maxValue, ok := unsignedIntTypeRange(target.GetType())
-		return ok && sourceMax <= maxValue
-	}
-	_, maxValue, ok := signedIntTypeRange(target.GetType())
-	return ok && sourceMax <= uint64(maxValue)
 }
 
 func isIntegerType(tp byte) bool {
