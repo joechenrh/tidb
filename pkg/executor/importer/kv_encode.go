@@ -44,9 +44,9 @@ type TableKVEncoder struct {
 	rowCache             []types.Datum
 	hasValueCache        []bool
 
-	// fileColIdxForInsertCol maps each insert-column index to the
+	// insertColToFileIdx maps each insert-column index to the
 	// corresponding file-column index. -1 means no mapping (e.g., SET clause).
-	fileColIdxForInsertCol []int
+	insertColToFileIdx []int
 
 	// currentSkipCast holds the per-file-column skip-cast decisions for the
 	// row currently being encoded. Set at the start of each Encode call.
@@ -258,30 +258,30 @@ func (en *TableKVEncoder) fillRow(row []types.Datum, hasValue []bool, rowID int6
 }
 
 func (en *TableKVEncoder) initInsertColFileMapping() {
-	en.fileColIdxForInsertCol = make([]int, len(en.insertColumns))
+	en.insertColToFileIdx = make([]int, len(en.insertColumns))
 	insertIdx := 0
 	for fileIdx, mapping := range en.fieldMappings {
 		if mapping == nil || mapping.Column == nil {
 			continue
 		}
-		if insertIdx < len(en.fileColIdxForInsertCol) {
+		if insertIdx < len(en.insertColToFileIdx) {
 			intest.Assert(mapping.Column.ID == en.insertColumns[insertIdx].ID,
 				"fieldMapping column ID mismatch with insertColumns")
-			en.fileColIdxForInsertCol[insertIdx] = fileIdx
+			en.insertColToFileIdx[insertIdx] = fileIdx
 		}
 		insertIdx++
 	}
 	// SET clause columns have no file column
-	for ; insertIdx < len(en.fileColIdxForInsertCol); insertIdx++ {
-		en.fileColIdxForInsertCol[insertIdx] = -1
+	for ; insertIdx < len(en.insertColToFileIdx); insertIdx++ {
+		en.insertColToFileIdx[insertIdx] = -1
 	}
 }
 
 func (en *TableKVEncoder) canSkipCastColumnValue(insertColIdx int) bool {
-	if en.currentSkipCast == nil || insertColIdx >= len(en.fileColIdxForInsertCol) {
+	if en.currentSkipCast == nil || insertColIdx >= len(en.insertColToFileIdx) {
 		return false
 	}
-	fileIdx := en.fileColIdxForInsertCol[insertColIdx]
+	fileIdx := en.insertColToFileIdx[insertColIdx]
 	if fileIdx < 0 || fileIdx >= len(en.currentSkipCast) {
 		return false
 	}
