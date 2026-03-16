@@ -65,7 +65,7 @@ func buildSkipCastPrechecks(
 ) []columnSkipCastPrecheck {
 	infos := make([]columnSkipCastPrecheck, len(colTypes))
 	for i := range colTypes {
-		if i < len(targetCols) && targetCols[i] != nil {
+		if targetCols[i] != nil {
 			infos[i] = parquetColumnPrecheck(colTypes[i], targetCols[i])
 		}
 	}
@@ -83,64 +83,56 @@ func parquetColumnPrecheck(
 		unsigned:      mysql.HasUnsignedFlag(target.GetFlag()),
 	}
 
+	// TIMESTAMP always requires cast because of timezone and DST semantics.
 	if target.GetType() == mysql.TypeTimestamp {
-		// TIMESTAMP always requires cast/conversion because of timezone and
-		// DST semantics.
 		return info
 	}
 
 	switch tp.physical {
 	case parquet.Types.Boolean:
-		if isIntegerType(target.GetType()) {
+		if mysql.IsIntegerType(target.GetType()) {
 			info.checkKind = castSkipAlways
 		}
-		return info
 	case parquet.Types.Float:
 		if target.GetType() == mysql.TypeFloat {
 			info.checkKind = castSkipAlways
 		}
-		return info
 	case parquet.Types.Double:
 		if target.GetType() == mysql.TypeDouble {
 			info.checkKind = castSkipAlways
 		}
-		return info
 	case parquet.Types.Int32:
-		return parquetInt32SkipCastInfo(tp, target, info)
+		info = int32CanSkipCast(tp, target, info)
 	case parquet.Types.Int64:
-		return parquetInt64SkipCastInfo(tp, target, info)
+		info = int64CanSkipCast(tp, target, info)
 	case parquet.Types.Int96:
 		if target.GetType() == mysql.TypeDate || target.GetType() == mysql.TypeDatetime {
 			info.checkKind = castSkipAlways
 		}
-		return info
 	case parquet.Types.ByteArray, parquet.Types.FixedLenByteArray:
-		if tp.converted == schema.ConvertedTypes.Decimal && target.GetType() == mysql.TypeNewDecimal {
-			if canSkipDecimalByMeta(tp.decimalMeta, target) {
+		switch tp.converted {
+		case schema.ConvertedTypes.Decimal:
+			if decimalCanSkipCast(tp.decimalMeta, target) {
 				info.checkKind = castCheckDecimal
 			}
-			return info
-		}
-		if tp.converted == schema.ConvertedTypes.UTF8 && canSkipStringTarget(target) {
-			info.checkKind = castCheckString
-			info.targetFlen = target.GetFlen()
-			// For binary charset (VARBINARY), encoding is nil — only byte length check needed.
-			if !strings.EqualFold(target.GetCharset(), "binary") {
-				info.encoding = charset.FindEncoding(target.GetCharset())
+		case schema.ConvertedTypes.UTF8:
+			if stringCanSkipCast(target) {
+				info.checkKind = castCheckString
+				if !strings.EqualFold(target.GetCharset(), "binary") {
+					info.encoding = charset.FindEncoding(target.GetCharset())
+				}
 			}
 		}
-		return info
-	default:
-		return info
 	}
+	return info
 }
 
-func parquetInt32SkipCastInfo(
-	converted columnType,
+func int32CanSkipCast(
+	colTp columnType,
 	target *model.ColumnInfo,
 	info columnSkipCastPrecheck,
 ) columnSkipCastPrecheck {
-	switch converted.converted {
+	switch colTp.converted {
 	case schema.ConvertedTypes.Date:
 		if target.GetType() == mysql.TypeDate {
 			info.checkKind = castSkipAlways
@@ -150,74 +142,65 @@ func parquetInt32SkipCastInfo(
 			info.checkKind = castSkipAlways
 		}
 	case schema.ConvertedTypes.Decimal:
-		if target.GetType() == mysql.TypeNewDecimal && canSkipDecimalByMeta(converted.decimalMeta, target) {
+		if target.GetType() == mysql.TypeNewDecimal && decimalCanSkipCast(colTp.decimalMeta, target) {
 			info.checkKind = castCheckDecimal
 		}
-	default:
-		// Physical type is int32. Setter produces:
-		//   unsigned converted types → uint64(uint32(val)), range [0, MaxUint32]
-		//   signed converted types   → int64(val), range [MinInt32, MaxInt32]
-		if isUnsignedConvertedType(converted.converted) {
-			if unsignedRangeFitsTarget(math.MaxUint32, target) {
-				info.checkKind = castSkipAlways
-			}
-		} else {
-			if signedRangeFitsTarget(math.MinInt32, math.MaxInt32, target) {
-				info.checkKind = castSkipAlways
-			}
+	case schema.ConvertedTypes.Int8,
+		schema.ConvertedTypes.Int16,
+		schema.ConvertedTypes.Int32:
+		if signedRangeFitsTarget(math.MinInt32, math.MaxInt32, target) {
+			info.checkKind = castSkipAlways
+		}
+	case schema.ConvertedTypes.Uint8,
+		schema.ConvertedTypes.Uint16,
+		schema.ConvertedTypes.Uint32:
+		if unsignedRangeFitsTarget(math.MaxUint32, target) {
+			info.checkKind = castSkipAlways
 		}
 	}
 	return info
 }
 
-func parquetInt64SkipCastInfo(
-	converted columnType,
+func int64CanSkipCast(
+	colTp columnType,
 	target *model.ColumnInfo,
 	info columnSkipCastPrecheck,
 ) columnSkipCastPrecheck {
-	switch converted.converted {
-	case schema.ConvertedTypes.TimeMicros, schema.ConvertedTypes.TimestampMillis, schema.ConvertedTypes.TimestampMicros:
+	switch colTp.converted {
+	case schema.ConvertedTypes.TimeMicros,
+		schema.ConvertedTypes.TimestampMillis,
+		schema.ConvertedTypes.TimestampMicros:
 		if target.GetType() == mysql.TypeDate || target.GetType() == mysql.TypeDatetime {
 			info.checkKind = castSkipAlways
 		}
 	case schema.ConvertedTypes.Decimal:
-		if target.GetType() == mysql.TypeNewDecimal && canSkipDecimalByMeta(converted.decimalMeta, target) {
+		if decimalCanSkipCast(colTp.decimalMeta, target) {
 			info.checkKind = castCheckDecimal
 		}
-	default:
-		// Physical type is int64. Setter produces:
-		//   unsigned converted types → uint64(val), range [0, MaxUint64]
-		//   signed converted types   → int64(val), range [MinInt64, MaxInt64]
-		if isUnsignedConvertedType(converted.converted) {
-			if unsignedRangeFitsTarget(math.MaxUint64, target) {
-				info.checkKind = castSkipAlways
-			}
-		} else {
-			if signedRangeFitsTarget(math.MinInt64, math.MaxInt64, target) {
-				info.checkKind = castSkipAlways
-			}
+	case schema.ConvertedTypes.Int8, schema.ConvertedTypes.Int16,
+		schema.ConvertedTypes.Int32, schema.ConvertedTypes.Int64:
+		if signedRangeFitsTarget(math.MinInt64, math.MaxInt64, target) {
+			info.checkKind = castSkipAlways
+		}
+	case schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16,
+		schema.ConvertedTypes.Uint32, schema.ConvertedTypes.Uint64:
+		if unsignedRangeFitsTarget(math.MaxUint64, target) {
+			info.checkKind = castSkipAlways
 		}
 	}
 	return info
 }
 
 func signedRangeFitsTarget(sourceMin int64, sourceMax int64, target *model.ColumnInfo) bool {
-	if !isIntegerType(target.GetType()) {
+	if !mysql.IsIntegerType(target.GetType()) || mysql.HasUnsignedFlag(target.GetFlag()) {
 		return false
-	}
-	if mysql.HasUnsignedFlag(target.GetFlag()) {
-		if sourceMin < 0 {
-			return false
-		}
-		_, maxValue, ok := unsignedIntTypeRange(target.GetType())
-		return ok && uint64(sourceMax) <= maxValue
 	}
 	minValue, maxValue, ok := signedIntTypeRange(target.GetType())
 	return ok && sourceMin >= minValue && sourceMax <= maxValue
 }
 
 func unsignedRangeFitsTarget(sourceMax uint64, target *model.ColumnInfo) bool {
-	if !isIntegerType(target.GetType()) {
+	if !mysql.IsIntegerType(target.GetType()) {
 		return false
 	}
 	if mysql.HasUnsignedFlag(target.GetFlag()) {
@@ -228,60 +211,21 @@ func unsignedRangeFitsTarget(sourceMax uint64, target *model.ColumnInfo) bool {
 	return ok && sourceMax <= uint64(maxValue)
 }
 
-func isUnsignedConvertedType(ct schema.ConvertedType) bool {
-	switch ct {
-	case schema.ConvertedTypes.Uint8, schema.ConvertedTypes.Uint16,
-		schema.ConvertedTypes.Uint32, schema.ConvertedTypes.Uint64:
-		return true
-	default:
-		return false
-	}
-}
-
-func isIntegerType(tp byte) bool {
-	switch tp {
-	case mysql.TypeTiny, mysql.TypeShort, mysql.TypeInt24, mysql.TypeLong, mysql.TypeLonglong:
-		return true
-	default:
-		return false
-	}
-}
-
 func signedIntTypeRange(tp byte) (minValue int64, maxValue int64, ok bool) {
-	switch tp {
-	case mysql.TypeTiny:
-		return math.MinInt8, math.MaxInt8, true
-	case mysql.TypeShort:
-		return math.MinInt16, math.MaxInt16, true
-	case mysql.TypeInt24:
-		return -(1 << 23), (1 << 23) - 1, true
-	case mysql.TypeLong:
-		return math.MinInt32, math.MaxInt32, true
-	case mysql.TypeLonglong:
-		return math.MinInt64, math.MaxInt64, true
-	default:
+	if !mysql.IsIntegerType(tp) {
 		return 0, 0, false
 	}
+	return types.IntegerSignedLowerBound(tp), types.IntegerSignedUpperBound(tp), true
 }
 
 func unsignedIntTypeRange(tp byte) (minValue uint64, maxValue uint64, ok bool) {
-	switch tp {
-	case mysql.TypeTiny:
-		return 0, math.MaxUint8, true
-	case mysql.TypeShort:
-		return 0, math.MaxUint16, true
-	case mysql.TypeInt24:
-		return 0, (1 << 24) - 1, true
-	case mysql.TypeLong:
-		return 0, math.MaxUint32, true
-	case mysql.TypeLonglong:
-		return 0, math.MaxUint64, true
-	default:
+	if !mysql.IsIntegerType(tp) {
 		return 0, 0, false
 	}
+	return 0, types.IntegerUnsignedUpperBound(tp), true
 }
 
-func canSkipDecimalByMeta(decimalMeta schema.DecimalMetadata, target *model.ColumnInfo) bool {
+func decimalCanSkipCast(decimalMeta schema.DecimalMetadata, target *model.ColumnInfo) bool {
 	if target.GetType() != mysql.TypeNewDecimal || target.GetFlen() <= 0 || target.GetDecimal() < 0 {
 		return false
 	}
@@ -297,12 +241,11 @@ func canSkipDecimalByMeta(decimalMeta schema.DecimalMetadata, target *model.Colu
 	return true
 }
 
-func canSkipStringTarget(target *model.ColumnInfo) bool {
+func stringCanSkipCast(target *model.ColumnInfo) bool {
 	switch target.GetType() {
 	case mysql.TypeVarchar, mysql.TypeVarString:
 		return true
 	case mysql.TypeString:
-		// CHAR (non-binary): eligible. BINARY(M): NOT eligible (needs null-byte padding).
 		return !types.IsBinaryStr(&target.FieldType)
 	default:
 		return false

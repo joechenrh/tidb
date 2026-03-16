@@ -238,7 +238,7 @@ type rowGroupParser struct {
 // init creates column iterators for each column.
 func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, prechecks []columnSkipCastPrecheck) (err error) {
 	meta := rgp.readers[0].MetaData()
-	numCols := meta.Schema.NumColumns()
+	numCols := len(colTypes)
 	rgp.iterators = make([]iterator, numCols)
 
 	defer func() {
@@ -360,7 +360,7 @@ func (pp *ParquetParser) buildRowGroupParser() (err error) {
 		return errors.Trace(err)
 	}
 
-	readers := make([]*file.Reader, pp.fileMeta.NumColumns())
+	readers := make([]*file.Reader, len(pp.colTypes))
 	defer func() {
 		if err != nil {
 			for _, r := range readers {
@@ -371,7 +371,7 @@ func (pp *ParquetParser) buildRowGroupParser() (err error) {
 		}
 	}()
 
-	for i := range pp.fileMeta.NumColumns() {
+	for i := range pp.colTypes {
 		eg.Go(func() error {
 			wrapper, err := builder(i)
 			if err != nil {
@@ -653,8 +653,12 @@ func NewParquetParser(
 
 	fileMeta := reader.MetaData()
 	fileSchema := fileMeta.Schema
-	colTypes := make([]columnType, fileSchema.NumColumns())
-	colNames := make([]string, 0, fileSchema.NumColumns())
+	numColumns := fileSchema.NumColumns()
+	if meta.TargetColumns != nil {
+		numColumns = min(numColumns, len(meta.TargetColumns))
+	}
+	colTypes := make([]columnType, numColumns)
+	colNames := make([]string, 0, numColumns)
 
 	for i := range colTypes {
 		desc := fileSchema.Column(i)
@@ -681,7 +685,6 @@ func NewParquetParser(
 		}
 	}
 
-	numColumns := len(colTypes)
 	pool := zeropool.New(func() []types.Datum {
 		return make([]types.Datum, numColumns)
 	})
@@ -690,13 +693,13 @@ func NewParquetParser(
 		fileMeta: fileMeta,
 		colTypes: colTypes,
 		colNames: colNames,
-		ctx:               ctx,
-		store:             store,
-		path:              path,
-		prop:              prop,
-		alloc:             allocator,
-		logger:            logger,
-		rowPool:           &pool,
+		ctx:      ctx,
+		store:    store,
+		path:     path,
+		prop:     prop,
+		alloc:    allocator,
+		logger:   logger,
+		rowPool:  &pool,
 	}
 	if meta.TargetColumns != nil {
 		parser.skipCastPrechecks = buildSkipCastPrechecks(colTypes, meta.TargetColumns)
