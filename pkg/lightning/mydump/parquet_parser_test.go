@@ -391,11 +391,11 @@ func TestParquetVariousTypes(t *testing.T) {
 		// because we always reuse the datums in reader.lastRow.Row, so we can't directly
 		// compare will `DeepEqual` here
 		assert.NoError(t, reader.ReadRow())
-		assert.Equal(t, types.KindUint64, reader.lastRow.Row[0].Kind())
-		assert.Equal(t, uint64(0), reader.lastRow.Row[0].GetValue())
+		assert.Equal(t, types.KindInt64, reader.lastRow.Row[0].Kind())
+		assert.Equal(t, int64(0), reader.lastRow.Row[0].GetValue())
 		assert.NoError(t, reader.ReadRow())
-		assert.Equal(t, types.KindUint64, reader.lastRow.Row[0].Kind())
-		assert.Equal(t, uint64(1), reader.lastRow.Row[0].GetValue())
+		assert.Equal(t, types.KindInt64, reader.lastRow.Row[0].Kind())
+		assert.Equal(t, int64(1), reader.lastRow.Row[0].GetValue())
 	})
 }
 

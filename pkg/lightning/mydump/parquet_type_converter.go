@@ -301,11 +301,21 @@ func setParquetDecimalFromInt64(
 
 func getBoolSetter(target *model.ColumnInfo) setter[bool] {
 	skipCast := target != nil && mysql.IsIntegerType(target.GetType())
+	if skipCast && mysql.HasUnsignedFlag(target.GetFlag()) {
+		return func(val bool, d *types.Datum) (bool, error) {
+			if val {
+				d.SetUint64(1)
+			} else {
+				d.SetUint64(0)
+			}
+			return true, nil
+		}
+	}
 	return func(val bool, d *types.Datum) (bool, error) {
 		if val {
-			d.SetUint64(1)
+			d.SetInt64(1)
 		} else {
-			d.SetUint64(0)
+			d.SetInt64(0)
 		}
 		return skipCast, nil
 	}
