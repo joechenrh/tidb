@@ -120,6 +120,11 @@ func stringCheckFunc(val types.Datum, targetFlen int, enc charset.Encoding) bool
 	if targetFlen == types.UnspecifiedLength || len(b) <= targetFlen {
 		return true
 	}
+	// For binary charset, flen is byte count
+	if enc.Tp() == charset.EncodingTpBin {
+		return false
+	}
+	// For non-binary charsets, flen is character count.
 	return utf8.RuneCount(b) <= targetFlen
 }
 

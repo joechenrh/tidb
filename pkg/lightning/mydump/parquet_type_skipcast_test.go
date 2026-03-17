@@ -341,6 +341,14 @@ func TestStringCheckFunc(t *testing.T) {
 		require.False(t, stringCheckFunc(d, 2, binEnc))
 	})
 
+	t.Run("varbinary multi-byte utf8 exceeds byte flen", func(t *testing.T) {
+		// 'é' = [0xC3, 0xA9]: 2 bytes, 1 rune. With flen=1 (byte count for
+		// binary), must return false even though RuneCount(b)=1 <= 1.
+		binEnc := charset.FindEncoding("binary")
+		d := types.NewBytesDatum([]byte{0xC3, 0xA9})
+		require.False(t, stringCheckFunc(d, 1, binEnc))
+	})
+
 	t.Run("negative flen means unlimited", func(t *testing.T) {
 		d := types.NewStringDatum("any length string")
 		require.True(t, stringCheckFunc(d, -1, utf8Enc))
