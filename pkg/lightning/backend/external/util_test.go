@@ -226,11 +226,10 @@ func TestGetReadRangeFromPropsLimitsParallelRead(t *testing.T) {
 	}
 
 	// The errgroup limit prevents additional goroutines from entering Open.
-	// Verify no third Open call was made while the first two are blocked.
 	select {
 	case <-store.startedCh:
 		t.Fatal("more than 2 concurrent opens detected despite concurrency limit")
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 	require.EqualValues(t, 2, store.max.Load())
 

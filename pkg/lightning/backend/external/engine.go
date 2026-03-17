@@ -249,7 +249,7 @@ func NewExternalEngine(
 func (e *Engine) loadRangeBatchData(
 	ctx context.Context,
 	jobKeys [][]byte,
-	startOffsets, endOffsets []uint64,
+	startOffsets, estimatedEndOffsets []uint64,
 	outCh chan<- engineapi.DataAndRanges,
 ) error {
 	readAndSortRateHist := metrics.GlobalSortReadFromCloudStorageRate.WithLabelValues("read_and_sort")
@@ -287,7 +287,7 @@ func (e *Engine) loadRangeBatchData(
 		startKey,
 		endKey,
 		startOffsets,
-		endOffsets,
+		estimatedEndOffsets,
 		e.smallBlockBufPool,
 		e.largeBlockBufPool,
 		&e.memKVsAndBuffers,
@@ -528,8 +528,8 @@ func (e *Engine) LoadIngestData(
 		// want to generate N ranges, so we need N+1 keys
 		end := min(1+start+currBatchSize, len(e.jobKeys))
 		startOffsets := readRangesPerKey[start]
-		endOffsets := readRangesPerKey[end-1]
-		err = e.loadRangeBatchData(ctx, e.jobKeys[start:end], startOffsets, endOffsets, outCh)
+		estimatedEndOffsets := readRangesPerKey[end-1]
+		err = e.loadRangeBatchData(ctx, e.jobKeys[start:end], startOffsets, estimatedEndOffsets, outCh)
 		if err != nil {
 			return err
 		}

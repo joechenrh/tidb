@@ -51,7 +51,7 @@ var (
 	// parallel to avoid bursty object-storage reads when an import step tracks a
 	// large number of files. Use a lower default than the data-reader budget
 	// because props scanning is metadata-heavy and benefits less from high fanout.
-	getReadRangeFromPropsConcurrency = 32
+	getReadRangeFromPropsConcurrency = 64
 )
 
 // getReadRangeFromProps reads the statistic files to find the largest offset of
