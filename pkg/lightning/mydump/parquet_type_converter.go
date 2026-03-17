@@ -56,20 +56,42 @@ func isTargetType(target *model.ColumnInfo, tps ...byte) bool {
 	return slices.Contains(tps, target.GetType())
 }
 
-func decimalCanSkipCast(decimalMeta schema.DecimalMetadata, target *model.ColumnInfo) bool {
-	if target.GetType() != mysql.TypeNewDecimal || target.GetFlen() <= 0 || target.GetDecimal() < 0 {
-		return false
+func getDecimalCheckFunc(
+	decimalMeta schema.DecimalMetadata,
+	target *model.ColumnInfo,
+) func(*types.Datum) bool {
+	if target == nil || target.GetType() != mysql.TypeNewDecimal || target.GetFlen() <= 0 || target.GetDecimal() < 0 {
+		return nil
 	}
+	targetFlen := target.GetFlen()
+	targetDecimal := target.GetDecimal()
+	unsigned := mysql.HasUnsignedFlag(target.GetFlag())
 	if !decimalMeta.IsSet {
-		return false
+		return nil
 	}
-	if int(decimalMeta.Scale) != target.GetDecimal() {
-		return false
+	if int(decimalMeta.Scale) != targetDecimal {
+		return nil
 	}
-	if int(decimalMeta.Precision) > target.GetFlen() {
-		return false
+	if int(decimalMeta.Precision) > targetFlen {
+		return nil
 	}
-	return true
+	return func(d *types.Datum) bool {
+		if d.Kind() != types.KindMysqlDecimal {
+			return false
+		}
+		dec := d.GetMysqlDecimal()
+		if unsigned && dec.IsNegative() && !dec.IsZero() {
+			return false
+		}
+		precision, frac := dec.PrecisionAndFrac()
+		if targetFlen > 0 && precision > targetFlen {
+			return false
+		}
+		if targetDecimal >= 0 && frac != targetDecimal {
+			return false
+		}
+		return true
+	}
 }
 
 func stringCanSkipCast(target *model.ColumnInfo) bool {
@@ -86,7 +108,7 @@ func stringCanSkipCast(target *model.ColumnInfo) bool {
 	}
 }
 
-func postCheckString(val types.Datum, targetFlen int, enc charset.Encoding) bool {
+func stringCheckFunc(val types.Datum, targetFlen int, enc charset.Encoding) bool {
 	if val.Kind() != types.KindString && val.Kind() != types.KindBytes {
 		return false
 	}
@@ -101,52 +123,20 @@ func postCheckString(val types.Datum, targetFlen int, enc charset.Encoding) bool
 	return utf8.RuneCount(b) <= targetFlen
 }
 
-func postCheckDecimal(val types.Datum, targetFlen int, targetDecimal int, unsigned bool) bool {
-	if val.Kind() != types.KindMysqlDecimal {
-		return false
-	}
-	dec := val.GetMysqlDecimal()
-	if unsigned && dec.IsNegative() && !dec.IsZero() {
-		return false
-	}
-	precision, frac := dec.PrecisionAndFrac()
-	if targetFlen > 0 && precision > targetFlen {
-		return false
-	}
-	if targetDecimal >= 0 && frac != targetDecimal {
-		return false
-	}
-	return true
-}
-
-func temporalTargetType(target *model.ColumnInfo, defaultType byte) byte {
+func resolveTemporalTarget(target *model.ColumnInfo) (tp byte, fsp int, canSkipCast bool) {
 	if target == nil {
-		return defaultType
+		return mysql.TypeTimestamp, types.MaxFsp, false
 	}
 	switch target.GetType() {
 	case mysql.TypeDate:
-		return mysql.TypeDate
+		return mysql.TypeDate, 0, true
 	case mysql.TypeDatetime:
-		return mysql.TypeDatetime
-	default:
-		return defaultType
-	}
-}
-
-func temporalTargetFSP(target *model.ColumnInfo, defaultFSP int) int {
-	if target == nil {
-		return defaultFSP
-	}
-	switch target.GetType() {
-	case mysql.TypeDate:
-		return 0
-	case mysql.TypeDatetime:
-		if target.GetDecimal() < 0 {
-			return defaultFSP
+		if target.GetDecimal() >= 0 {
+			return mysql.TypeDatetime, min(target.GetDecimal(), types.MaxFsp), true
 		}
-		return min(target.GetDecimal(), types.MaxFsp)
+		return mysql.TypeDatetime, types.MaxFsp, true
 	default:
-		return defaultFSP
+		return mysql.TypeTimestamp, types.MaxFsp, false
 	}
 }
 
@@ -160,7 +150,10 @@ var fspTruncateUnit = [7]time.Duration{
 	time.Microsecond,
 }
 
-func setTemporalDatum(t time.Time, d *types.Datum, tp byte, fsp int) {
+func setTemporalDatum(t time.Time, d *types.Datum, loc *time.Location, adjustToUTC bool, tp byte, fsp int) {
+	if adjustToUTC {
+		t = t.In(loc)
+	}
 	if tp == mysql.TypeDate {
 		t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 	} else if fsp < types.MaxFsp {
@@ -319,49 +312,39 @@ func getBoolSetter(target *model.ColumnInfo) setter[bool] {
 }
 
 func getInt32Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[int32] {
-	temporalType := temporalTargetType(target, mysql.TypeTimestamp)
-	temporalFSP := temporalTargetFSP(target, 6)
-	if temporalType == mysql.TypeDate {
-		temporalFSP = 0
-	}
+	temporalType, temporalFSP, temporalSkipCast := resolveTemporalTarget(target)
 	switch converted.converted {
 	case schema.ConvertedTypes.Decimal:
-		if target != nil && decimalCanSkipCast(converted.decimalMeta, target) {
-			targetFlen := target.GetFlen()
-			targetDecimal := target.GetDecimal()
-			unsigned := mysql.HasUnsignedFlag(target.GetFlag())
+		checkFunc := getDecimalCheckFunc(converted.decimalMeta, target)
+		if checkFunc == nil {
 			return func(val int32, d *types.Datum) (bool, error) {
 				dec := initializeMyDecimal(d)
-				err := setParquetDecimalFromInt64(int64(val), dec, converted.decimalMeta)
-				if err != nil {
-					return false, err
-				}
-				return postCheckDecimal(*d, targetFlen, targetDecimal, unsigned), nil
+				return false, setParquetDecimalFromInt64(int64(val), dec, converted.decimalMeta)
 			}
 		}
 		return func(val int32, d *types.Datum) (bool, error) {
 			dec := initializeMyDecimal(d)
-			return false, setParquetDecimalFromInt64(int64(val), dec, converted.decimalMeta)
+			err := setParquetDecimalFromInt64(int64(val), dec, converted.decimalMeta)
+			if err != nil {
+				return false, err
+			}
+			return checkFunc(d), nil
 		}
 	case schema.ConvertedTypes.Date:
-		skipCast := isTargetType(target, mysql.TypeDate)
 		return func(val int32, d *types.Datum) (bool, error) {
-			// Convert days since Unix epoch to time.Time
+			// DATE is days since epoch, timezone-agnostic — no loc conversion.
+			// Ref: https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#date
 			t := time.Unix(int64(val)*86400, 0).In(time.UTC)
 			mysqlTime := types.NewTime(types.FromGoTime(t), mysql.TypeDate, 0)
 			d.SetMysqlTime(mysqlTime)
-			return skipCast, nil
+			// Only skip cast when target is DATE; DATE→DATETIME needs cast.
+			return temporalType == mysql.TypeDate, nil
 		}
 	case schema.ConvertedTypes.TimeMillis:
-		skipCast := isTargetType(target, mysql.TypeDate, mysql.TypeDatetime)
 		return func(val int32, d *types.Datum) (bool, error) {
-			// Convert milliseconds to time.Time
 			t := time.UnixMilli(int64(val)).In(time.UTC)
-			if converted.IsAdjustedToUTC {
-				t = t.In(loc)
-			}
-			setTemporalDatum(t, d, temporalType, temporalFSP)
-			return skipCast, nil
+			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+			return temporalSkipCast, nil
 		}
 	default:
 		fromUnsigned := isUnsignedParquetType(converted.converted)
@@ -370,15 +353,17 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 			if fromUnsigned && toUnsigned {
 				upperBound := types.IntegerUnsignedUpperBound(target.GetType())
 				return func(val int32, d *types.Datum) (bool, error) {
-					d.SetUint64(uint64(uint32(val)))
-					return uint64(uint32(val)) <= upperBound, nil
+					v := uint64(uint32(val))
+					d.SetUint64(v)
+					return v <= upperBound, nil
 				}
 			} else if !fromUnsigned && !toUnsigned {
 				lowerBound := types.IntegerSignedLowerBound(target.GetType())
 				upperBound := types.IntegerSignedUpperBound(target.GetType())
 				return func(val int32, d *types.Datum) (bool, error) {
-					d.SetInt64(int64(val))
-					return int64(val) >= lowerBound && int64(val) <= upperBound, nil
+					v := int64(val)
+					d.SetInt64(v)
+					return v >= lowerBound && v <= upperBound, nil
 				}
 			}
 		}
@@ -396,60 +381,35 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 }
 
 func getInt64Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[int64] {
-	temporalType := temporalTargetType(target, mysql.TypeTimestamp)
-	temporalFSP := temporalTargetFSP(target, 6)
-	if temporalType == mysql.TypeDate {
-		temporalFSP = 0
-	}
-	isTemporalTarget := target != nil && (target.GetType() == mysql.TypeDate || target.GetType() == mysql.TypeDatetime)
+	temporalType, temporalFSP, temporalSkipCast := resolveTemporalTarget(target)
 	switch converted.converted {
-	case schema.ConvertedTypes.TimeMicros:
+	case schema.ConvertedTypes.TimeMicros, schema.ConvertedTypes.TimestampMicros:
 		return func(val int64, d *types.Datum) (bool, error) {
-			// Convert microseconds to time.Time
 			t := time.UnixMicro(val).In(time.UTC)
-			if converted.IsAdjustedToUTC {
-				t = t.In(loc)
-			}
-			setTemporalDatum(t, d, temporalType, temporalFSP)
-			return isTemporalTarget, nil
+			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+			return temporalSkipCast, nil
 		}
 	case schema.ConvertedTypes.TimestampMillis:
 		return func(val int64, d *types.Datum) (bool, error) {
-			// Convert milliseconds to time.Time
 			t := time.UnixMilli(val).In(time.UTC)
-			if converted.IsAdjustedToUTC {
-				t = t.In(loc)
-			}
-			setTemporalDatum(t, d, temporalType, temporalFSP)
-			return isTemporalTarget, nil
-		}
-	case schema.ConvertedTypes.TimestampMicros:
-		return func(val int64, d *types.Datum) (bool, error) {
-			// Convert microseconds to time.Time
-			t := time.UnixMicro(val).In(time.UTC)
-			if converted.IsAdjustedToUTC {
-				t = t.In(loc)
-			}
-			setTemporalDatum(t, d, temporalType, temporalFSP)
-			return isTemporalTarget, nil
+			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+			return temporalSkipCast, nil
 		}
 	case schema.ConvertedTypes.Decimal:
-		if target != nil && decimalCanSkipCast(converted.decimalMeta, target) {
-			targetFlen := target.GetFlen()
-			targetDecimal := target.GetDecimal()
-			unsigned := mysql.HasUnsignedFlag(target.GetFlag())
+		checkFunc := getDecimalCheckFunc(converted.decimalMeta, target)
+		if checkFunc == nil {
 			return func(val int64, d *types.Datum) (bool, error) {
 				dec := initializeMyDecimal(d)
-				err := setParquetDecimalFromInt64(val, dec, converted.decimalMeta)
-				if err != nil {
-					return false, err
-				}
-				return postCheckDecimal(*d, targetFlen, targetDecimal, unsigned), nil
+				return false, setParquetDecimalFromInt64(val, dec, converted.decimalMeta)
 			}
 		}
 		return func(val int64, d *types.Datum) (bool, error) {
 			dec := initializeMyDecimal(d)
-			return false, setParquetDecimalFromInt64(val, dec, converted.decimalMeta)
+			err := setParquetDecimalFromInt64(val, dec, converted.decimalMeta)
+			if err != nil {
+				return false, err
+			}
+			return checkFunc(d), nil
 		}
 	default:
 		fromUnsigned := isUnsignedParquetType(converted.converted)
@@ -484,33 +444,15 @@ func getInt64Setter(converted *columnType, loc *time.Location, target *model.Col
 }
 
 func getInt96Setter(converted *columnType, loc *time.Location, target *model.ColumnInfo) setter[parquet.Int96] {
-	temporalType := temporalTargetType(target, mysql.TypeTimestamp)
-	temporalFSP := temporalTargetFSP(target, 6)
-	if temporalType == mysql.TypeDate {
-		temporalFSP = 0
-	}
-	skipCast := isTargetType(target, mysql.TypeDate, mysql.TypeDatetime)
+	temporalType, temporalFSP, temporalSkipCast := resolveTemporalTarget(target)
 	return func(val parquet.Int96, d *types.Datum) (bool, error) {
-		// FYI: https://github.com/apache/spark/blob/d66a4e82eceb89a274edeb22c2fb4384bed5078b/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetWriteSupport.scala#L171-L178
-		// INT96 timestamp layout
-		// --------------------------
-		// |   64 bit   |   32 bit   |
-		// ---------------------------
-		// |  nano sec  |  julian day  |
-		// ---------------------------
-		// NOTE:
-		// INT96 is a deprecated type in parquet format to store timestamp, which consists of
-		// two parts: the first 8 bytes is the nanoseconds within the day, and the last 4 bytes
-		// is the Julian Day (days since noon on January 1, 4713 BC). And it will be converted it to UTC by
-		//   julian day - 2440588 (Julian Day of the Unix epoch 1970-01-01 00:00:00)
-		// As julian day is decoded as uint32, so if user store a date before 1970-01-01, the converted time will be wrong
-		// and possibly to be truncated.
+		// Ref: https://github.com/apache/parquet-format/blob/d20f9dd3d8e7663c44586f7dfb9b7a0534808c87/src/main/thrift/parquet.thrift#L1105-L1112
+		// INT96 is deprecated. Layout: [8B nanoseconds-of-day | 4B Julian day].
+		// Julian day is uint32(days since noon on January 1, 4713 BC), so dates
+		// before 1970-01-01 may be truncated.
 		t := val.ToTime().In(time.UTC)
-		if converted.IsAdjustedToUTC {
-			t = t.In(loc)
-		}
-		setTemporalDatum(t, d, temporalType, temporalFSP)
-		return skipCast, nil
+		setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+		return temporalSkipCast, nil
 	}
 }
 
@@ -530,80 +472,37 @@ func getFloat64Setter(target *model.ColumnInfo) setter[float64] {
 	}
 }
 
-func getByteArraySetter(converted *columnType, target *model.ColumnInfo) setter[parquet.ByteArray] {
+func getBytesSetter[T parquet.ByteArray | parquet.FixedLenByteArray](
+	converted *columnType, target *model.ColumnInfo,
+) setter[T] {
 	switch converted.converted {
+	case schema.ConvertedTypes.Decimal:
+		checkFunc := getDecimalCheckFunc(converted.decimalMeta, target)
+		if checkFunc == nil {
+			return func(val T, d *types.Datum) (bool, error) {
+				return false, setDatumFromDecimalByte(d, val, int(converted.decimalMeta.Scale))
+			}
+		}
+		return func(val T, d *types.Datum) (bool, error) {
+			err := setDatumFromDecimalByte(d, val, int(converted.decimalMeta.Scale))
+			if err != nil {
+				return false, err
+			}
+			return checkFunc(d), nil
+		}
 	case schema.ConvertedTypes.UTF8:
 		if stringCanSkipCast(target) {
 			targetFlen := target.GetFlen()
 			enc := charset.FindEncoding(target.GetCharset())
 			collation := target.GetCollate()
-			return func(val parquet.ByteArray, d *types.Datum) (bool, error) {
+			return func(val T, d *types.Datum) (bool, error) {
 				d.SetBytesAsString(val, collation, 0)
-				return postCheckString(*d, targetFlen, enc), nil
+				return stringCheckFunc(*d, targetFlen, enc), nil
 			}
 		}
-		return func(val parquet.ByteArray, d *types.Datum) (bool, error) {
-			d.SetBytesAsString(val, "binary", 0)
-			return false, nil
-		}
-	case schema.ConvertedTypes.Decimal:
-		if target != nil && decimalCanSkipCast(converted.decimalMeta, target) {
-			targetFlen := target.GetFlen()
-			targetDecimal := target.GetDecimal()
-			unsigned := mysql.HasUnsignedFlag(target.GetFlag())
-			return func(val parquet.ByteArray, d *types.Datum) (bool, error) {
-				err := setDatumFromDecimalByte(d, val, int(converted.decimalMeta.Scale))
-				if err != nil {
-					return false, err
-				}
-				return postCheckDecimal(*d, targetFlen, targetDecimal, unsigned), nil
-			}
-		}
-		return func(val parquet.ByteArray, d *types.Datum) (bool, error) {
-			return false, setDatumFromDecimalByte(d, val, int(converted.decimalMeta.Scale))
-		}
+		fallthrough
 	default:
-		return func(val parquet.ByteArray, d *types.Datum) (bool, error) {
-			d.SetBytesAsString(val, "binary", 0)
-			return false, nil
-		}
-	}
-}
-
-func getFixedLenByteArraySetter(converted *columnType, target *model.ColumnInfo) setter[parquet.FixedLenByteArray] {
-	switch converted.converted {
-	case schema.ConvertedTypes.UTF8:
-		if target != nil && stringCanSkipCast(target) {
-			targetFlen := target.GetFlen()
-			enc := charset.FindEncoding(target.GetCharset())
-			collation := target.GetCollate()
-			return func(val parquet.FixedLenByteArray, d *types.Datum) (bool, error) {
-				d.SetBytesAsString(val, collation, 0)
-				return postCheckString(*d, targetFlen, enc), nil
-			}
-		}
-		return func(val parquet.FixedLenByteArray, d *types.Datum) (bool, error) {
-			d.SetBytesAsString(val, "binary", 0)
-			return false, nil
-		}
-	case schema.ConvertedTypes.Decimal:
-		if target != nil && decimalCanSkipCast(converted.decimalMeta, target) {
-			targetFlen := target.GetFlen()
-			targetDecimal := target.GetDecimal()
-			unsigned := mysql.HasUnsignedFlag(target.GetFlag())
-			return func(val parquet.FixedLenByteArray, d *types.Datum) (bool, error) {
-				err := setDatumFromDecimalByte(d, val, int(converted.decimalMeta.Scale))
-				if err != nil {
-					return false, err
-				}
-				return postCheckDecimal(*d, targetFlen, targetDecimal, unsigned), nil
-			}
-		}
-		return func(val parquet.FixedLenByteArray, d *types.Datum) (bool, error) {
-			return false, setDatumFromDecimalByte(d, val, int(converted.decimalMeta.Scale))
-		}
-	default:
-		return func(val parquet.FixedLenByteArray, d *types.Datum) (bool, error) {
+		return func(val T, d *types.Datum) (bool, error) {
 			d.SetBytesAsString(val, "binary", 0)
 			return false, nil
 		}

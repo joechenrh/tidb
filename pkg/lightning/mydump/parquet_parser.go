@@ -206,9 +206,9 @@ func createColumnIterator(
 	case parquet.Types.Int96:
 		return newColumnIterator[parquet.Int96, *file.Int96ColumnChunkReader](batchSize, getInt96Setter(converted, loc, target))
 	case parquet.Types.ByteArray:
-		return newColumnIterator[parquet.ByteArray, *file.ByteArrayColumnChunkReader](batchSize, getByteArraySetter(converted, target))
+		return newColumnIterator[parquet.ByteArray, *file.ByteArrayColumnChunkReader](batchSize, getBytesSetter[parquet.ByteArray](converted, target))
 	case parquet.Types.FixedLenByteArray:
-		return newColumnIterator[parquet.FixedLenByteArray, *file.FixedLenByteArrayColumnChunkReader](batchSize, getFixedLenByteArraySetter(converted, target))
+		return newColumnIterator[parquet.FixedLenByteArray, *file.FixedLenByteArrayColumnChunkReader](batchSize, getBytesSetter[parquet.FixedLenByteArray](converted, target))
 	default:
 		return nil
 	}
@@ -253,11 +253,7 @@ func (rgp *rowGroupParser) init(colTypes []columnType, loc *time.Location, targe
 
 	for idx := range numCols {
 		tp := meta.Schema.Column(idx).PhysicalType()
-		var target *model.ColumnInfo
-		if targetCols != nil {
-			target = targetCols[idx]
-		}
-		iter := createColumnIterator(tp, &colTypes[idx], loc, target, readBatchSize)
+		iter := createColumnIterator(tp, &colTypes[idx], loc, targetCols[idx], readBatchSize)
 		if iter == nil {
 			return errors.Errorf("unsupported parquet type %s", tp.String())
 		}

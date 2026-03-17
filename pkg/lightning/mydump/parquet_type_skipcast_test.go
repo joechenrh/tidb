@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/schema"
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/parser/charset"
@@ -65,7 +66,7 @@ func TestSetTemporalDatumTruncation(t *testing.T) {
 	t.Run("DATE zeroes time portion", func(t *testing.T) {
 		var d types.Datum
 		tm := time.Date(2025, 1, 2, 3, 4, 5, 123456000, time.UTC)
-		setTemporalDatum(tm, &d, mysql.TypeDate, 0)
+		setTemporalDatum(tm, &d, nil, false, mysql.TypeDate, 0)
 		got := d.GetMysqlTime()
 		require.Equal(t, mysql.TypeDate, got.Type())
 		require.Equal(t, "2025-01-02", got.String())
@@ -74,7 +75,7 @@ func TestSetTemporalDatumTruncation(t *testing.T) {
 	t.Run("DATETIME(0) truncates sub-second", func(t *testing.T) {
 		var d types.Datum
 		tm := time.Date(2025, 1, 2, 3, 4, 5, 999999000, time.UTC)
-		setTemporalDatum(tm, &d, mysql.TypeDatetime, 0)
+		setTemporalDatum(tm, &d, nil, false, mysql.TypeDatetime, 0)
 		got := d.GetMysqlTime()
 		require.Equal(t, "2025-01-02 03:04:05", got.String())
 	})
@@ -82,7 +83,7 @@ func TestSetTemporalDatumTruncation(t *testing.T) {
 	t.Run("DATETIME(3) truncates sub-millisecond", func(t *testing.T) {
 		var d types.Datum
 		tm := time.Date(2025, 1, 2, 3, 4, 5, 123999000, time.UTC)
-		setTemporalDatum(tm, &d, mysql.TypeDatetime, 3)
+		setTemporalDatum(tm, &d, nil, false, mysql.TypeDatetime, 3)
 		got := d.GetMysqlTime()
 		require.Equal(t, "2025-01-02 03:04:05.123", got.String())
 	})
@@ -90,7 +91,7 @@ func TestSetTemporalDatumTruncation(t *testing.T) {
 	t.Run("DATETIME(6) keeps full microseconds", func(t *testing.T) {
 		var d types.Datum
 		tm := time.Date(2025, 1, 2, 3, 4, 5, 123456000, time.UTC)
-		setTemporalDatum(tm, &d, mysql.TypeDatetime, 6)
+		setTemporalDatum(tm, &d, nil, false, mysql.TypeDatetime, 6)
 		got := d.GetMysqlTime()
 		require.Equal(t, "2025-01-02 03:04:05.123456", got.String())
 	})
@@ -117,7 +118,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 		converted := &columnType{converted: schema.ConvertedTypes.UTF8}
 		target := newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "utf8mb4", "")
 
-		setter := getByteArraySetter(converted, target)
+		setter := getBytesSetter[parquet.ByteArray](converted, target)
 		var d types.Datum
 		canSkip, err := setter([]byte("hello"), &d)
 		require.NoError(t, err)
@@ -128,7 +129,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 		converted := &columnType{converted: schema.ConvertedTypes.UTF8}
 		target := newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 20, 0, "binary", "")
 
-		setter := getByteArraySetter(converted, target)
+		setter := getBytesSetter[parquet.ByteArray](converted, target)
 		var d types.Datum
 		canSkip, err := setter([]byte("hello"), &d)
 		require.NoError(t, err)
@@ -146,7 +147,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 		}
 		target := newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "binary", "binary")
 
-		setter := getByteArraySetter(converted, target)
+		setter := getBytesSetter[parquet.ByteArray](converted, target)
 		require.NotNil(t, setter)
 		// A small positive decimal: 1.23 = 123 in 2's complement = [0x00, 0x7B]
 		var d types.Datum
@@ -166,7 +167,7 @@ func TestParquetSkipCastInfoForStringAndDecimal(t *testing.T) {
 		}
 		target := newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 8, 2, "", "")
 
-		setter := getFixedLenByteArraySetter(converted, target)
+		setter := getBytesSetter[parquet.FixedLenByteArray](converted, target)
 		require.NotNil(t, setter)
 		// decimalCanSkipCast fails → always returns false
 		var d types.Datum
@@ -233,48 +234,48 @@ func TestStringPostCheck(t *testing.T) {
 
 	t.Run("valid utf8 within length", func(t *testing.T) {
 		d := types.NewStringDatum("hello")
-		require.True(t, postCheckString(d, 10, utf8Enc))
+		require.True(t, stringCheckFunc(d, 10, utf8Enc))
 	})
 
 	t.Run("valid utf8 exceeds char length", func(t *testing.T) {
 		d := types.NewStringDatum("hello")
-		require.False(t, postCheckString(d, 3, utf8Enc))
+		require.False(t, stringCheckFunc(d, 3, utf8Enc))
 	})
 
 	t.Run("multi-byte within char length", func(t *testing.T) {
 		d := types.NewStringDatum("你好") // 2 chars, 6 bytes
-		require.True(t, postCheckString(d, 5, utf8Enc))
+		require.True(t, stringCheckFunc(d, 5, utf8Enc))
 	})
 
 	t.Run("invalid utf8 fails", func(t *testing.T) {
 		d := types.NewBytesDatum([]byte{0xff, 0xfe})
-		require.False(t, postCheckString(d, 100, utf8Enc))
+		require.False(t, stringCheckFunc(d, 100, utf8Enc))
 	})
 
 	t.Run("varbinary accepts any bytes", func(t *testing.T) {
 		binEnc := charset.FindEncoding("binary")
 		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.True(t, postCheckString(d, 100, binEnc))
+		require.True(t, stringCheckFunc(d, 100, binEnc))
 	})
 
 	t.Run("varbinary exceeds byte length", func(t *testing.T) {
 		binEnc := charset.FindEncoding("binary")
 		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.False(t, postCheckString(d, 2, binEnc))
+		require.False(t, stringCheckFunc(d, 2, binEnc))
 	})
 
 	t.Run("negative flen means unlimited", func(t *testing.T) {
 		d := types.NewStringDatum("any length string")
-		require.True(t, postCheckString(d, -1, utf8Enc))
+		require.True(t, stringCheckFunc(d, -1, utf8Enc))
 	})
 }
 
 func TestBuildSkipCastPrechecks(t *testing.T) {
 	cases := []struct {
-		name           string
-		getSetter      func(target *model.ColumnInfo) func() (bool, error)
-		target         *model.ColumnInfo
-		expectCanSkip  bool
+		name          string
+		getSetter     func(target *model.ColumnInfo) func() (bool, error)
+		target        *model.ColumnInfo
+		expectCanSkip bool
 	}{
 		{"bool to int",
 			func(target *model.ColumnInfo) func() (bool, error) {
@@ -324,7 +325,7 @@ func TestBuildSkipCastPrechecks(t *testing.T) {
 		{"utf8 to VARCHAR utf8mb4",
 			func(target *model.ColumnInfo) func() (bool, error) {
 				converted := &columnType{converted: schema.ConvertedTypes.UTF8}
-				s := getByteArraySetter(converted, target)
+				s := getBytesSetter[parquet.ByteArray](converted, target)
 				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
 			},
 			newParquetTargetColumnInfo(mysql.TypeVarchar, 0, 255, 0, "utf8mb4", "utf8mb4_bin"),
@@ -332,7 +333,7 @@ func TestBuildSkipCastPrechecks(t *testing.T) {
 		{"utf8 to CHAR utf8mb4",
 			func(target *model.ColumnInfo) func() (bool, error) {
 				converted := &columnType{converted: schema.ConvertedTypes.UTF8}
-				s := getByteArraySetter(converted, target)
+				s := getBytesSetter[parquet.ByteArray](converted, target)
 				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
 			},
 			newParquetTargetColumnInfo(mysql.TypeString, 0, 255, 0, "utf8mb4", "utf8mb4_bin"),
@@ -340,7 +341,7 @@ func TestBuildSkipCastPrechecks(t *testing.T) {
 		{"bytes to BINARY(M) not eligible",
 			func(target *model.ColumnInfo) func() (bool, error) {
 				converted := &columnType{converted: schema.ConvertedTypes.None}
-				s := getByteArraySetter(converted, target)
+				s := getBytesSetter[parquet.ByteArray](converted, target)
 				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
 			},
 			newParquetTargetColumnInfo(mysql.TypeString, mysql.BinaryFlag, 10, 0, "binary", "binary"),
@@ -348,7 +349,7 @@ func TestBuildSkipCastPrechecks(t *testing.T) {
 		{"utf8 to VARBINARY",
 			func(target *model.ColumnInfo) func() (bool, error) {
 				converted := &columnType{converted: schema.ConvertedTypes.UTF8}
-				s := getByteArraySetter(converted, target)
+				s := getBytesSetter[parquet.ByteArray](converted, target)
 				return func() (bool, error) { return s([]byte("hi"), &types.Datum{}) }
 			},
 			newParquetTargetColumnInfo(mysql.TypeVarchar, mysql.BinaryFlag, 255, 0, "binary", "binary"),
@@ -395,38 +396,56 @@ func TestPostCheckNullValues(t *testing.T) {
 		d := types.Datum{}
 		require.True(t, d.IsNull())
 		// Null should NOT pass passStringPostCheck directly
-		require.False(t, postCheckString(d, 100, nil))
-		// But passDecimalPostCheck also returns false for null
-		require.False(t, postCheckDecimal(d, 10, 2, false))
+		require.False(t, stringCheckFunc(d, 100, nil))
+		// getDecimalCheckFunc also returns false for null
+		decCheck := getDecimalCheckFunc(
+			schema.DecimalMetadata{IsSet: true, Precision: 10, Scale: 2},
+			newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 10, 2, "", ""),
+		)
+		require.False(t, decCheck(&d))
 	})
 }
 
 func TestDecimalPostCheck(t *testing.T) {
 	t.Run("fits exactly", func(t *testing.T) {
+		check := getDecimalCheckFunc(
+			schema.DecimalMetadata{IsSet: true, Precision: 5, Scale: 2},
+			newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 5, 2, "", ""),
+		)
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("123.45")))
 		d := types.NewDecimalDatum(dec)
-		require.True(t, postCheckDecimal(d, 5, 2, false))
+		require.True(t, check(&d))
 	})
 
 	t.Run("precision overflow", func(t *testing.T) {
+		check := getDecimalCheckFunc(
+			schema.DecimalMetadata{IsSet: true, Precision: 5, Scale: 2},
+			newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 5, 2, "", ""),
+		)
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("123456.78")))
 		d := types.NewDecimalDatum(dec)
-		require.False(t, postCheckDecimal(d, 5, 2, false))
+		require.False(t, check(&d))
 	})
 
 	t.Run("negative into unsigned", func(t *testing.T) {
+		check := getDecimalCheckFunc(
+			schema.DecimalMetadata{IsSet: true, Precision: 10, Scale: 2},
+			newParquetTargetColumnInfo(mysql.TypeNewDecimal, mysql.UnsignedFlag, 10, 2, "", ""),
+		)
 		dec := new(types.MyDecimal)
 		require.NoError(t, dec.FromString([]byte("-1.00")))
 		d := types.NewDecimalDatum(dec)
-		require.False(t, postCheckDecimal(d, 10, 2, true))
+		require.False(t, check(&d))
 	})
 
 	t.Run("frac mismatch", func(t *testing.T) {
-		dec := new(types.MyDecimal)
-		require.NoError(t, dec.FromString([]byte("1.2")))
-		d := types.NewDecimalDatum(dec)
-		require.False(t, postCheckDecimal(d, 10, 2, false))
+		// Scale=1 but target expects decimal=2 → getDecimalCheckFunc returns nil
+		check := getDecimalCheckFunc(
+			schema.DecimalMetadata{IsSet: true, Precision: 10, Scale: 1},
+			newParquetTargetColumnInfo(mysql.TypeNewDecimal, 0, 10, 2, "", ""),
+		)
+		require.Nil(t, check)
 	})
 }
