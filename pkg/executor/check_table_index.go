@@ -455,6 +455,180 @@ func (b *normalCheckBuilder) getRecords(ctx context.Context, se sessionctx.Conte
 	return getRecordWithChecksum(ctx, se, sql, b.tblInfo.IsCommonHandle, b.pkTypes, b.indexColTypes())
 }
 
+type mvCheckBuilder struct {
+	tblName    string
+	handleCols []string
+	pkTypes    []*types.FieldType
+	idxInfo    *model.IndexInfo
+	tblInfo    *model.TableInfo
+}
+
+// handleChecksum returns the CRC32 expression over handle columns and non-array index columns, used for bucketing.
+func (b *mvCheckBuilder) handleChecksum() string {
+	crc32Cols := make([]string, len(b.handleCols))
+	copy(crc32Cols, b.handleCols)
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		if len(ExtractCastArrayExpr(tblCol)) == 0 {
+			crc32Cols = append(crc32Cols, ColumnName(col.Name.O))
+		}
+	}
+	return crc32FromCols(crc32Cols)
+}
+
+// buildChecksumQuery returns complete SQL for the checksum comparison phase,
+// producing the same SQL as buildChecksumSQLForMVIndex but with actual values
+// instead of %s placeholders.
+func (b *mvCheckBuilder) buildChecksumQuery(groupByKey, whereKey string) (string, string) {
+	idxName := ColumnName(b.idxInfo.Name.String())
+
+	var (
+		tableArrayCols string
+		indexArrayCols string
+		tableFilterCol string
+		crc32Cols      = make([]string, len(b.handleCols))
+	)
+	copy(crc32Cols, b.handleCols)
+
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		rawExpr := ExtractCastArrayExpr(tblCol)
+		generatedExpr := strings.ToLower(tblCol.GeneratedExprString)
+
+		colName := ColumnName(col.Name.O)
+		if len(rawExpr) > 0 {
+			tableFilterCol = fmt.Sprintf("(JSON_LENGTH(%s) > 0 or JSON_LENGTH(%s) is null)", rawExpr, rawExpr)
+			tableArrayCols = strings.Replace(generatedExpr, "cast", "JSON_SUM_CRC32", 1)
+			indexArrayCols = fmt.Sprintf("CRC32(%s)", colName)
+		} else {
+			crc32Cols = append(crc32Cols, colName)
+		}
+	}
+
+	md5Handle := crc32FromCols(crc32Cols)
+
+	tableSQL := fmt.Sprintf(
+		"SELECT /*+ read_from_storage(tikv[%s]) */ CAST(SUM((%s MOD %d) * %s) AS SIGNED), %s, COUNT(*) FROM %s USE INDEX() WHERE %s AND %s = 0 GROUP BY %s",
+		b.tblName, md5Handle, expression.JSONCRC32Mod, tableArrayCols, groupByKey,
+		b.tblName, tableFilterCol, whereKey, groupByKey,
+	)
+	indexSQL := fmt.Sprintf(
+		"SELECT CAST(SUM((%s MOD %d) * (%s MOD %d)) AS SIGNED), %s, COUNT(*) FROM %s USE INDEX(%s) WHERE %s = 0 GROUP BY %s",
+		md5Handle, expression.JSONCRC32Mod, indexArrayCols, expression.JSONCRC32Mod,
+		groupByKey, b.tblName, idxName, whereKey, groupByKey,
+	)
+	return tableSQL, indexSQL
+}
+
+// buildCheckRowQuery returns complete SQL for the detail row comparison phase,
+// producing the same SQL as buildCheckRowSQLForMVIndex but with actual values
+// instead of %s placeholders.
+func (b *mvCheckBuilder) buildCheckRowQuery(groupByKey string) (string, string) {
+	idxName := ColumnName(b.idxInfo.Name.String())
+
+	var (
+		tableFilterCol  string
+		tableSelectCols = make([]string, len(b.handleCols))
+		tableHandleCols = make([]string, len(b.handleCols))
+		tableArrayCol   string
+
+		indexSelectCols   = make([]string, len(b.handleCols))
+		indexSubqueryCols = make([]string, len(b.handleCols))
+		indexHandleCols   = make([]string, len(b.handleCols))
+		indexArrayCol     string
+	)
+	copy(tableSelectCols, b.handleCols)
+	copy(tableHandleCols, b.handleCols)
+	copy(indexSelectCols, b.handleCols)
+	copy(indexSubqueryCols, b.handleCols)
+	copy(indexHandleCols, b.handleCols)
+
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		generatedExpr := strings.ToLower(tblCol.GeneratedExprString)
+		rawExpr := ExtractCastArrayExpr(tblCol)
+
+		alias := buildAlias(col.Name, "")
+		colName := ColumnName(col.Name.O)
+		if len(rawExpr) > 0 {
+			tableFilterCol = fmt.Sprintf("(JSON_LENGTH(%s) > 0 or JSON_LENGTH(%s) is null)", rawExpr, rawExpr)
+			tableArrayCol = strings.Replace(generatedExpr, "cast", "JSON_SUM_CRC32", 1)
+			tableSelectCols = append(tableSelectCols, rawExpr)
+
+			indexSubqueryCols = append(indexSubqueryCols, fmt.Sprintf("CRC32(%s) as %s", colName, alias))
+			indexArrayCol = fmt.Sprintf("CAST(SUM(%s MOD %d) AS SIGNED)", alias, expression.JSONCRC32Mod)
+
+			alias = buildAlias(col.Name, "_array")
+			arrayExpr := strings.Replace(generatedExpr, "array", "", 1)
+			arrayExpr = strings.Replace(arrayExpr, rawExpr, colName, 1)
+			arrayExpr = fmt.Sprintf("(%s) as %s", arrayExpr, alias)
+
+			indexSubqueryCols = append(indexSubqueryCols, arrayExpr)
+			indexSelectCols = append(indexSelectCols, fmt.Sprintf("JSON_ARRAYAGG(%s)", alias))
+		} else {
+			tableSelectCols = append(tableSelectCols, colName)
+			tableHandleCols = append(tableHandleCols, colName)
+
+			indexSubqueryCols = append(indexSubqueryCols, fmt.Sprintf("%s AS %s", colName, alias))
+			indexSelectCols = append(indexSelectCols, fmt.Sprintf("MIN(%s)", alias))
+			indexHandleCols = append(indexHandleCols, fmt.Sprintf("MIN(%s)", alias))
+		}
+	}
+
+	tableChecksum := fmt.Sprintf("%s * %s", crc32FromCols(tableHandleCols), tableArrayCol)
+	indexChecksum := fmt.Sprintf("%s * %s", crc32FromCols(indexHandleCols), indexArrayCol)
+	handleColsStr := strings.Join(b.handleCols, ", ")
+
+	tableSQL := fmt.Sprintf(
+		"SELECT /*+ read_from_storage(tikv[%s]) */ %s, %s FROM %s USE INDEX() WHERE %s AND %s = 0 ORDER BY %s",
+		b.tblName, strings.Join(tableSelectCols, ", "), tableChecksum,
+		b.tblName, tableFilterCol, groupByKey, handleColsStr,
+	)
+	indexSQL := fmt.Sprintf(
+		"SELECT %s, %s FROM (select %s FROM %s USE INDEX(%s) WHERE %s = 0) tmp GROUP BY %s ORDER BY %s",
+		strings.Join(indexSelectCols, ", "), indexChecksum,
+		strings.Join(indexSubqueryCols, ", "), b.tblName,
+		idxName, groupByKey, handleColsStr, handleColsStr,
+	)
+	return tableSQL, indexSQL
+}
+
+// indexColTypes builds field types for MV index columns. Array columns are mapped to TypeJSON.
+func (b *mvCheckBuilder) indexColTypes() []*types.FieldType {
+	colTypes := make([]*types.FieldType, 0, len(b.idxInfo.Columns))
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		if len(ExtractCastArrayExpr(tblCol)) > 0 {
+			colTypes = append(colTypes, types.NewFieldType(mysql.TypeJSON))
+		} else {
+			colTypes = append(colTypes, &tblCol.FieldType)
+		}
+	}
+	return colTypes
+}
+
+// getRecords parses query results into records with checksums for row comparison.
+func (b *mvCheckBuilder) getRecords(ctx context.Context, se sessionctx.Context, sql string) ([]*recordWithChecksum, error) {
+	return getRecordWithChecksum(ctx, se, sql, b.tblInfo.IsCommonHandle, b.pkTypes, b.indexColTypes())
+}
+
+// newIndexCheckBuilder creates the appropriate indexCheckBuilder for the given index.
+// For MV indexes, it returns an mvCheckBuilder; for normal indexes, a normalCheckBuilder.
+func newIndexCheckBuilder(tblName string, handleCols []string, pkTypes []*types.FieldType,
+	idxInfo *model.IndexInfo, tblInfo *model.TableInfo,
+) indexCheckBuilder {
+	if idxInfo.MVIndex {
+		return &mvCheckBuilder{
+			tblName: tblName, handleCols: handleCols, pkTypes: pkTypes,
+			idxInfo: idxInfo, tblInfo: tblInfo,
+		}
+	}
+	return &normalCheckBuilder{
+		tblName: tblName, handleCols: handleCols, pkTypes: pkTypes,
+		idxInfo: idxInfo, tblInfo: tblInfo,
+	}
+}
+
 type checkIndexWorker struct {
 	sctx       sessionctx.Context
 	dbName     string
