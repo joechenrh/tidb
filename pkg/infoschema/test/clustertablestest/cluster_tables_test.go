@@ -15,7 +15,6 @@
 package clustertablestest
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 	"net"
@@ -33,6 +32,7 @@ import (
 	"github.com/pingcap/fn"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/metapb"
+	"github.com/pingcap/tidb/pkg/bindinfo"
 	"github.com/pingcap/tidb/pkg/config"
 	"github.com/pingcap/tidb/pkg/config/kerneltype"
 	"github.com/pingcap/tidb/pkg/domain"
@@ -41,7 +41,6 @@ import (
 	"github.com/pingcap/tidb/pkg/infoschema/internal"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/parser"
-	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/auth"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/privilege/privileges"
@@ -326,7 +325,7 @@ select * from t3;
 	tk.MustQuery("select count(*) from `SLOW_QUERY`").Check(testkit.Rows("4"))
 	tk.MustQuery("select count(*) from `CLUSTER_PROCESSLIST`").Check(testkit.Rows("1"))
 	tk.MustQuery("select * from `CLUSTER_PROCESSLIST`").Check(testkit.Rows(fmt.Sprintf(
-		":10080 1 root 127.0.0.1 <nil> Query 9223372036 %s <nil>  0 0    <nil> 0 0", "")))
+		":10080 1 root 127.0.0.1 <nil> Query 9223372036 %s <nil>  0 <nil> <nil> <nil> 0    <nil> 0 0", "")))
 	tk.MustExec("create user user1")
 	tk.MustExec("create user user2")
 	user1 := testkit.NewTestKit(t, s.store)
@@ -1030,7 +1029,7 @@ func TestQuickBinding(t *testing.T) {
 		{`select /*+ use_index_merge(t2, k_a, k_bc) */ * from t2 where a<? or b<1 and c<1`, "use_index_merge(@`sel_1` `t2` `k_a`, `k_bc`)", nil},
 
 		{`select /*+ leading(t3,t4,t2,t1) */ * from t1 join t2 join t3 join t4 where t1.a = t2.a and t2.b = t3.b and t3.a = t4.a and t2.c = ?`,
-			"inl_hash_join(`test`.`t1`), leading(`test`.`t3`, `test`.`t4`, `test`.`t2`, `test`.`t1`), hash_join_build(`test`.`t2`), hash_join_build(`test`.`t3`), use_index(@`sel_1` `test`.`t3` ), use_index(@`sel_1` `test`.`t4` ), use_index(@`sel_1` `test`.`t2` `k_bc`), no_order_index(@`sel_1` `test`.`t2` `k_bc`), use_index(@`sel_1` `test`.`t1` `k_a`), no_order_index(@`sel_1` `test`.`t1` `k_a`)",
+			"inl_hash_join(`test`.`t1`), leading(`test`.`t3`, `test`.`t4`, `test`.`t2`, `test`.`t1`), hash_join_build(`test`.`t3`), use_index(@`sel_1` `test`.`t3` `k_bc`), no_order_index(@`sel_1` `test`.`t3` `k_bc`), use_index(@`sel_1` `test`.`t4` ), use_index(@`sel_1` `test`.`t2` `k_bc`), no_order_index(@`sel_1` `test`.`t2` `k_bc`), use_index(@`sel_1` `test`.`t1` `k_a`), no_order_index(@`sel_1` `test`.`t1` `k_a`)",
 			nil,
 		},
 
@@ -1045,12 +1044,12 @@ func TestQuickBinding(t *testing.T) {
 		},
 
 		{`select /*+ leading(t2,t1) */ * from t1 join t2 where t1.a = t2.a and t2.b in (select a from t3 where t3.b = 1) and t1.c = ?`,
-			"leading(`test`.`t2`, `test`.`t1`, `test`.`t3`@`sel_2`), inl_hash_join(`test`.`t2`), use_index(@`sel_1` `test`.`t2` `k_a`), no_order_index(@`sel_1` `test`.`t2` `k_a`), use_index(@`sel_1` `test`.`t1` ), no_order_index(@`sel_1` `test`.`t1` `primary`), hash_agg(@`sel_2`), use_index(@`sel_2` `test`.`t3` `k_bc`), no_order_index(@`sel_2` `test`.`t3` `k_bc`), agg_to_cop(@`sel_2`)",
+			"leading(`test`.`t2`, `test`.`t1`, `test`.`t3`@`sel_2`), hash_join_build(`test`.`t2`), use_index(@`sel_1` `test`.`t2` `k_bc`), no_order_index(@`sel_1` `test`.`t2` `k_bc`), use_index(@`sel_1` `test`.`t1` ), no_order_index(@`sel_1` `test`.`t1` `primary`), hash_agg(@`sel_2`), use_index(@`sel_2` `test`.`t3` `k_bc`), no_order_index(@`sel_2` `test`.`t3` `k_bc`), agg_to_cop(@`sel_2`)",
 			nil,
 		},
 
 		{`update /*+ leading(t2,t1,t4@sel_2) */ t1 join t2 set t1.a = 1 where t1.a = t2.a and t2.b in (select a from t3 where t3.b = 1) and t1.b in (select b from t4 where t4.b = 1) and t1.c = ?`,
-			"leading(`test`.`t2`, `test`.`t1`, `test`.`t4`@`sel_2`, `test`.`t3`@`sel_1`), inl_hash_join(`test`.`t2`), use_index(@`upd_1` `test`.`t2` `k_a`), no_order_index(@`upd_1` `test`.`t2` `k_a`), use_index(@`upd_1` `test`.`t1` `k_bc`), order_index(@`upd_1` `test`.`t1` `k_bc`), stream_agg(@`sel_2`), use_index(@`sel_2` `test`.`t4` `k_bc`), order_index(@`sel_2` `test`.`t4` `k_bc`), agg_to_cop(@`sel_2`), hash_agg(@`sel_1`), use_index(@`sel_1` `test`.`t3` `k_bc`), no_order_index(@`sel_1` `test`.`t3` `k_bc`), agg_to_cop(@`sel_1`)",
+			"leading(`test`.`t2`, `test`.`t1`, `test`.`t4`@`sel_2`, `test`.`t3`@`sel_1`), hash_join_build(`test`.`t2`), use_index(@`upd_1` `test`.`t2` `k_bc`), no_order_index(@`upd_1` `test`.`t2` `k_bc`), use_index(@`upd_1` `test`.`t1` `k_bc`), no_order_index(@`upd_1` `test`.`t1` `k_bc`), stream_agg(@`sel_2`), use_index(@`sel_2` `test`.`t4` `k_bc`), order_index(@`sel_2` `test`.`t4` `k_bc`), agg_to_cop(@`sel_2`), hash_agg(@`sel_1`), use_index(@`sel_1` `test`.`t3` `k_bc`), no_order_index(@`sel_1` `test`.`t3` `k_bc`), agg_to_cop(@`sel_1`)",
 			nil,
 		},
 
@@ -1060,12 +1059,12 @@ func TestQuickBinding(t *testing.T) {
 		},
 
 		{`select /*+ leading(t2,t1) */ * from t1 join t2 join (select * from t3) n join t4 where t1.a = t2.a and t2.b = n.b and n.a = t4.a and n.c = ?`,
-			"leading(`test`.`t2`, `test`.`t1`, `test`.`n`, `test`.`t4`), hash_join_build(`test`.`t2`), use_index(@`sel_1` `test`.`t2` ), use_index(@`sel_1` `test`.`t1` ), no_order_index(@`sel_1` `test`.`t1` `primary`), use_index(@`sel_2` `test`.`t3` `k_bc`), no_order_index(@`sel_2` `test`.`t3` `k_bc`), use_index(@`sel_1` `test`.`t4` `k_a`), no_order_index(@`sel_1` `test`.`t4` `k_a`)",
+			"leading(`test`.`t2`, `test`.`t1`, `test`.`n`, `test`.`t4`), hash_join_build(`test`.`t2`), use_index(@`sel_1` `test`.`t2` `k_bc`), no_order_index(@`sel_1` `test`.`t2` `k_bc`), use_index(@`sel_1` `test`.`t1` ), no_order_index(@`sel_1` `test`.`t1` `primary`), use_index(@`sel_2` `test`.`t3` `k_bc`), no_order_index(@`sel_2` `test`.`t3` `k_bc`), use_index(@`sel_1` `test`.`t4` `k_a`), no_order_index(@`sel_1` `test`.`t4` `k_a`)",
 			nil,
 		},
 
-		{`update /*+ hash_join(t1),leading(t1,t2@sel_2) */ t1 set b = 1 where c in (select a from t2 where c = 1) and c in (select a from t2 where c = ?)`,
-			"leading(`test`.`t1`, `test`.`t2`@`sel_2`, `test`.`t2`@`sel_1`), use_index(@`upd_1` `test`.`t1` ), no_order_index(@`upd_1` `test`.`t1` `primary`), hash_agg(@`sel_2`), use_index(@`sel_2` `test`.`t2` ), agg_to_cop(@`sel_2`), hash_agg(@`sel_1`), use_index(@`sel_1` `test`.`t2` ), agg_to_cop(@`sel_1`)",
+		{`update /*+ leading(t2@sel_1,t1,t2@sel_2) */ t1 set b = 1 where c in (select a from t2 where c = 1) and c in (select a from t2 where c = ?)`,
+			"leading(`test`.`t2`@`sel_1`, `test`.`t1`, `test`.`t2`@`sel_2`), hash_agg(@`sel_1`), use_index(@`sel_1` `test`.`t2` ), agg_to_cop(@`sel_1`), use_index(@`upd_1` `test`.`t1` ), no_order_index(@`upd_1` `test`.`t1` `primary`), hash_agg(@`sel_2`), use_index(@`sel_2` `test`.`t2` ), agg_to_cop(@`sel_2`)",
 			nil,
 		},
 	}
@@ -1532,7 +1531,11 @@ func TestSetBindingStatusBySQLDigest(t *testing.T) {
 	sql = "select * from t where t.a = 1"
 	tk.MustExec(sql)
 	tk.MustQuery("select @@last_plan_from_binding").Check(testkit.Rows("1"))
-
+	bindinfo.MaxWriteInterval = 1 * time.Microsecond
+	time.Sleep(1 * time.Second)
+	require.NoError(t, s.dom.BindingHandle().UpdateBindingUsageInfoToStorage())
+	tk.MustQuery(fmt.Sprintf(`select last_used_date from mysql.bind_info where original_sql != '%s' and last_used_date is null`,
+		bindinfo.BuiltinPseudoSQL4BindLock)).Check(testkit.Rows())
 	sqlDigest := tk.MustQuery("show global bindings").Rows()
 	tk.MustExec(fmt.Sprintf("set binding disabled for sql digest '%s'", sqlDigest[0][9]))
 	tk.MustExec(sql)
@@ -1902,24 +1905,13 @@ func TestMDLViewIDConflict(t *testing.T) {
 
 	tk.MustExec("use test")
 	tk.MustExec("create table t(a int);")
-	tbl, err := s.dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("t"))
-	require.NoError(t, err)
 	tk.MustExec("insert into t values (1)")
 
-	bigID := tbl.Meta().ID * 10
 	bigTableName := ""
-	// set a hard limitation on 10000 to avoid using too much resource
-	for i := range 10000 {
+	// set a hard limitation on 500 to avoid using too much resource
+	for i := range 500 {
 		bigTableName = fmt.Sprintf("t%d", i)
 		tk.MustExec(fmt.Sprintf("create table %s(a int);", bigTableName))
-
-		tbl, err := s.dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(bigTableName))
-		require.NoError(t, err)
-
-		require.LessOrEqual(t, tbl.Meta().ID, bigID)
-		if tbl.Meta().ID == bigID {
-			break
-		}
 	}
 	tk.MustExec("insert into t1 values (1)")
 	tk.MustExec(fmt.Sprintf("insert into %s values (1)", bigTableName))

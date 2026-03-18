@@ -365,6 +365,16 @@ func main() {
 		logutil.BgLogger().Warn(warnMsg)
 		tikv.EnableFailpoints()
 	}
+	// UniStore is a mock store for tests. It uses store addresses like "store1" which are not a valid
+	// host:port for gRPC. client-go's store liveness check uses gRPC health check on the store address,
+	// which may mistakenly mark the UniStore as unreachable and make tests hang.
+	// Force the liveness check to always return reachable for UniStore.
+	if config.GetGlobalConfig().Store == config.StoreTypeUniStore {
+		tikv.EnableFailpoints()
+		if err := failpoint.Enable("tikvclient/injectLiveness", `return("reachable")`); err != nil {
+			logutil.BgLogger().Warn("failed to enable tikvclient/injectLiveness for unistore", zap.Error(err))
+		}
+	}
 	if intest.EnableInternalCheck {
 		logutil.BgLogger().Warn("internal check is enabled, this should NOT happen in the production environment")
 	}
@@ -401,7 +411,7 @@ func main() {
 		executor.Stop()
 		close(exited)
 	})
-	topsql.SetupTopSQL(keyspace.GetKeyspaceNameBytesBySettings(), svr)
+	topsql.SetupTopProfiling(keyspace.GetKeyspaceNameBytesBySettings(), svr)
 	terror.MustNil(svr.Run(dom))
 	<-exited
 	syncLog()
@@ -865,6 +875,29 @@ func setGlobalVars() {
 	}
 	if len(cfg.TiDBReleaseVersion) > 0 {
 		mysql.TiDBReleaseVersion = cfg.TiDBReleaseVersion
+	}
+
+	// set instance variables
+	setInstanceVar := func(name string, value string) {
+		if value == "" || value == "0" {
+			return
+		}
+		old := variable.GetSysVar(name)
+		tmp := *old
+		tmp.Value = value
+		tmp.IsInitedFromConfig = true
+		variable.RegisterSysVar(&tmp)
+	}
+	{
+		setInstanceVar(vardef.TiDBStmtSummaryMaxStmtCount, strconv.FormatUint(cfg.Instance.StmtSummaryMaxStmtCount, 10))
+		setInstanceVar(vardef.TiDBServerMemoryLimit, cfg.Instance.ServerMemoryLimit)
+		setInstanceVar(vardef.TiDBMemArbitratorMode, cfg.Instance.MemArbitratorMode)
+		setInstanceVar(vardef.TiDBMemArbitratorSoftLimit, cfg.Instance.MemArbitratorSoftLimit)
+		setInstanceVar(vardef.TiDBServerMemoryLimitGCTrigger, cfg.Instance.ServerMemoryLimitGCTrigger)
+		setInstanceVar(vardef.TiDBInstancePlanCacheMaxMemSize, cfg.Instance.InstancePlanCacheMaxMemSize)
+		setInstanceVar(vardef.TiDBStatsCacheMemQuota, strconv.FormatUint(cfg.Instance.StatsCacheMemQuota, 10))
+		setInstanceVar(vardef.TiDBMemQuotaBindingCache, strconv.FormatUint(cfg.Instance.MemQuotaBindingCache, 10))
+		setInstanceVar(vardef.TiDBSchemaCacheSize, cfg.Instance.SchemaCacheSize)
 	}
 
 	variable.SetSysVar(vardef.TiDBForcePriority, mysql.Priority2Str[priority])

@@ -33,6 +33,7 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/pkg/config"
+	"github.com/pingcap/tidb/pkg/config/kerneltype"
 	ddltestutil "github.com/pingcap/tidb/pkg/ddl/testutil"
 	"github.com/pingcap/tidb/pkg/ddl/util"
 	"github.com/pingcap/tidb/pkg/errno"
@@ -86,6 +87,9 @@ func TestEarlyClose(t *testing.T) {
 
 	// Split the table.
 	tableStart := tablecodec.GenTableRecordPrefix(tblID)
+	if kerneltype.IsNextGen() {
+		tableStart = store.GetCodec().EncodeKey(tableStart)
+	}
 	cluster.SplitKeys(tableStart, tableStart.PrefixNext(), N/2)
 
 	ctx := context.Background()
@@ -617,21 +621,18 @@ func TestShowStatsHealthy(t *testing.T) {
 	tk.MustQuery("show stats_healthy").Check(testkit.Rows("test t  100"))
 	tk.MustExec("insert into t values (1), (2)")
 	do, _ := session.GetDomain(store)
-	err := do.StatsHandle().DumpStatsDeltaToKV(true)
-	require.NoError(t, err)
+	tk.MustExec("flush stats_delta")
 	tk.MustExec("analyze table t")
 	tk.MustQuery("show stats_healthy").Check(testkit.Rows("test t  100"))
 	tk.MustExec("insert into t values (3), (4), (5), (6), (7), (8), (9), (10)")
-	err = do.StatsHandle().DumpStatsDeltaToKV(true)
-	require.NoError(t, err)
-	err = do.StatsHandle().Update(context.Background(), do.InfoSchema())
+	tk.MustExec("flush stats_delta")
+	err := do.StatsHandle().Update(context.Background(), do.InfoSchema())
 	require.NoError(t, err)
 	tk.MustQuery("show stats_healthy").Check(testkit.Rows("test t  0"))
 	tk.MustExec("analyze table t")
 	tk.MustQuery("show stats_healthy").Check(testkit.Rows("test t  100"))
 	tk.MustExec("delete from t")
-	err = do.StatsHandle().DumpStatsDeltaToKV(true)
-	require.NoError(t, err)
+	tk.MustExec("flush stats_delta")
 	err = do.StatsHandle().Update(context.Background(), do.InfoSchema())
 	require.NoError(t, err)
 	tk.MustQuery("show stats_healthy").Check(testkit.Rows("test t  0"))
@@ -912,7 +913,7 @@ func TestBatchInsertDelete(t *testing.T) {
 		kv.TxnTotalSizeLimit.Store(originLimit)
 	}()
 	// Set the limitation to a small value, make it easier to reach the limitation.
-	kv.TxnTotalSizeLimit.Store(8000)
+	kv.TxnTotalSizeLimit.Store(8050)
 
 	tk := testkit.NewTestKit(t, store)
 	tk.MustExec("use test")

@@ -686,22 +686,22 @@ TableReader_8	8000.00	root		data:Selection_7
   └─TableFullScan_6	10000.00	cop[tikv]	table:t	keep order:false, stats:pseudo
 explain format = 'plan_cache' select * from t t1, t t2;
 id	estRows	task	access object	operator info
-HashJoin_21	100000000.00	root		CARTESIAN inner join
-├─TableReader_26(Build)	10000.00	root		data:TableFullScan_25
-│ └─TableFullScan_25	10000.00	cop[tikv]	table:t2	keep order:false, stats:pseudo
-└─TableReader_24(Probe)	10000.00	root		data:TableFullScan_23
-  └─TableFullScan_23	10000.00	cop[tikv]	table:t1	keep order:false, stats:pseudo
+HashJoin_22	100000000.00	root		CARTESIAN inner join
+├─TableReader_27(Build)	10000.00	root		data:TableFullScan_26
+│ └─TableFullScan_26	10000.00	cop[tikv]	table:t2	keep order:false, stats:pseudo
+└─TableReader_25(Probe)	10000.00	root		data:TableFullScan_24
+  └─TableFullScan_24	10000.00	cop[tikv]	table:t1	keep order:false, stats:pseudo
 explain format = 'plan_cache' select * from t where a in (select a from t);
 id	estRows	task	access object	operator info
-HashJoin_24	9990.00	root		inner join, equal:[eq(planner__core__plan_cache.t.a, planner__core__plan_cache.t.a)]
-├─HashAgg_43(Build)	7992.00	root		group by:planner__core__plan_cache.t.a, funcs:firstrow(planner__core__plan_cache.t.a)->planner__core__plan_cache.t.a
-│ └─TableReader_44	7992.00	root		data:HashAgg_35
-│   └─HashAgg_35	7992.00	cop[tikv]		group by:planner__core__plan_cache.t.a, 
-│     └─Selection_42	9990.00	cop[tikv]		not(isnull(planner__core__plan_cache.t.a))
-│       └─TableFullScan_41	10000.00	cop[tikv]	table:t	keep order:false, stats:pseudo
-└─TableReader_28(Probe)	9990.00	root		data:Selection_27
-  └─Selection_27	9990.00	cop[tikv]		not(isnull(planner__core__plan_cache.t.a))
-    └─TableFullScan_26	10000.00	cop[tikv]	table:t	keep order:false, stats:pseudo
+HashJoin_27	9990.00	root		inner join, equal:[eq(planner__core__plan_cache.t.a, planner__core__plan_cache.t.a)]
+├─HashAgg_46(Build)	7992.00	root		group by:planner__core__plan_cache.t.a, funcs:firstrow(planner__core__plan_cache.t.a)->planner__core__plan_cache.t.a
+│ └─TableReader_47	7992.00	root		data:HashAgg_38
+│   └─HashAgg_38	7992.00	cop[tikv]		group by:planner__core__plan_cache.t.a, 
+│     └─Selection_45	9990.00	cop[tikv]		not(isnull(planner__core__plan_cache.t.a))
+│       └─TableFullScan_44	10000.00	cop[tikv]	table:t	keep order:false, stats:pseudo
+└─TableReader_31(Probe)	9990.00	root		data:Selection_30
+  └─Selection_30	9990.00	cop[tikv]		not(isnull(planner__core__plan_cache.t.a))
+    └─TableFullScan_29	10000.00	cop[tikv]	table:t	keep order:false, stats:pseudo
 set tidb_enable_non_prepared_plan_cache=DEFAULT;
 set tidb_enable_non_prepared_plan_cache=1;
 explain format='plan_cache' select address from PERFORMANCE_SCHEMA.tikv_profile_cpu;
@@ -917,9 +917,9 @@ set tidb_enable_non_prepared_plan_cache=DEFAULT;
 drop table if exists t;
 create table t (a int primary key, b int, unique key(b));
 set tidb_enable_non_prepared_plan_cache=1;
-explain format='brief' select a from t where a in (1, 2);
-id	estRows	task	access object	operator info
-Batch_Point_Get	2.00	root	table:t	handle:[1 2], keep order:false, desc:false
+explain format = 'plan_tree' select a from t where a in (1, 2);
+id	task	access object	operator info
+Batch_Point_Get	root	table:t	handle:[1 2], keep order:false, desc:false
 select a from t where a in (1, 2);
 a
 select a from t where a in (1, 2);
@@ -927,9 +927,9 @@ a
 select @@last_plan_from_cache;
 @@last_plan_from_cache
 1
-explain format='brief' select b from t where b = 1;
-id	estRows	task	access object	operator info
-Point_Get	1.00	root	table:t, index:b(b)	
+explain format = 'plan_tree' select b from t where b = 1;
+id	task	access object	operator info
+Point_Get	root	table:t, index:b(b)	
 select b from t where b = 1;
 b
 select b from t where b = 1;
@@ -1573,10 +1573,10 @@ IndexReader_8	10000.00	root		index:IndexFullScan_7
 select @@last_plan_from_cache;
 @@last_plan_from_cache
 0
-explain format = 'brief' select * from t;
-id	estRows	task	access object	operator info
-IndexReader	10000.00	root		index:IndexFullScan
-└─IndexFullScan	10000.00	cop[tikv]	table:t, index:a(a)	keep order:false, stats:pseudo
+explain format = 'plan_tree' select * from t;
+id	task	access object	operator info
+IndexReader	root		index:IndexFullScan
+└─IndexFullScan	cop[tikv]	table:t, index:a(a)	keep order:false, stats:pseudo
 select @@last_plan_from_cache;
 @@last_plan_from_cache
 0
@@ -1645,12 +1645,12 @@ Limit_8	1.00	root		offset:0, count:1
 └─IndexReader_15	1.00	root		index:Limit_14
   └─Limit_14	1.00	cop[tikv]		offset:0, count:1
     └─IndexFullScan_13	1.00	cop[tikv]	table:t, index:a(a)	keep order:false, stats:pseudo
-explain format = 'brief' select * from t limit 1;
-id	estRows	task	access object	operator info
-Limit	1.00	root		offset:0, count:1
-└─IndexReader	1.00	root		index:Limit
-  └─Limit	1.00	cop[tikv]		offset:0, count:1
-    └─IndexFullScan	1.00	cop[tikv]	table:t, index:a(a)	keep order:false, stats:pseudo
+explain format = 'plan_tree' select * from t limit 1;
+id	task	access object	operator info
+Limit	root		offset:0, count:1
+└─IndexReader	root		index:Limit
+  └─Limit	cop[tikv]		offset:0, count:1
+    └─IndexFullScan	cop[tikv]	table:t, index:a(a)	keep order:false, stats:pseudo
 explain format = 'dot' select * from t limit 1;
 dot contents
 
@@ -2297,11 +2297,11 @@ create table t(a int);
 set tidb_enable_non_prepared_plan_cache=1;
 select * from t where a=1;
 a
-explain format='brief' select * from t where a=2;
-id	estRows	task	access object	operator info
-TableReader	10.00	root		data:Selection
-└─Selection	10.00	cop[tikv]		eq(planner__core__plan_cache.t.a, 2)
-  └─TableFullScan	10000.00	cop[tikv]	table:t	keep order:false, stats:pseudo
+explain format = 'plan_tree' select * from t where a=2;
+id	task	access object	operator info
+TableReader	root		data:Selection
+└─Selection	cop[tikv]		eq(planner__core__plan_cache.t.a, 2)
+  └─TableFullScan	cop[tikv]	table:t	keep order:false, stats:pseudo
 select @@last_plan_from_cache;
 @@last_plan_from_cache
 0

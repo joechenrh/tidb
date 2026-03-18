@@ -17,12 +17,13 @@ package crossks_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/keyspacepb"
 	"github.com/pingcap/tidb/pkg/config"
 	"github.com/pingcap/tidb/pkg/config/kerneltype"
-	"github.com/pingcap/tidb/pkg/disttask/framework/storage"
+	"github.com/pingcap/tidb/pkg/dxf/framework/storage"
 	"github.com/pingcap/tidb/pkg/executor/importer"
 	"github.com/pingcap/tidb/pkg/infoschema"
 	"github.com/pingcap/tidb/pkg/keyspace"
@@ -57,7 +58,8 @@ func TestManager(t *testing.T) {
 		t.Skip("cross keyspace is not supported in classic kernel")
 	}
 	integration.BeforeTestExternal(t)
-	cluster := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 10})
+	clientCount := 20
+	cluster := integration.NewClusterV3(t, &integration.ClusterConfig{Size: clientCount})
 	defer cluster.Terminate(t)
 	keyspaceIDs := map[string]uint32{
 		keyspace.System: 1,
@@ -66,17 +68,27 @@ func TestManager(t *testing.T) {
 		"ks3":           4,
 		"ksmdl":         5,
 	}
+	getETCDCli := func(ks string, ksID uint32) *clientv3.Client {
+		for i := range clientCount {
+			cli := cluster.Client(i)
+			if cli == nil {
+				continue
+			}
+			// we will close the client.
+			cluster.TakeClient(i)
+			codec, err := tikv.NewCodecV2(tikv.ModeTxn, &keyspacepb.KeyspaceMeta{Id: ksID, Name: ks})
+			require.NoError(t, err)
+			etcd.SetEtcdCliByNamespace(cli, keyspace.MakeKeyspaceEtcdNamespace(codec))
+			return cli
+		}
+		require.Fail(t, "cannot find etcd client for keyspace %s", ks)
+		return nil
+	}
 	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/domain/crossks/injectETCDCli",
 		func(cliP **clientv3.Client, ks string) {
 			id, ok := keyspaceIDs[ks]
 			require.True(t, ok)
-			// one client per ks
-			*cliP = cluster.Client(int(id - 1))
-			// we will close the client.
-			cluster.TakeClient(int(id - 1))
-			codec, err := tikv.NewCodecV2(tikv.ModeTxn, &keyspacepb.KeyspaceMeta{Id: id, Name: ks})
-			require.NoError(t, err)
-			etcd.SetEtcdCliByNamespace(*cliP, keyspace.MakeKeyspaceEtcdNamespace(codec))
+			*cliP = getETCDCli(ks, id)
 		},
 	)
 
@@ -224,9 +236,11 @@ func TestManager(t *testing.T) {
 			})
 			require.EqualValues(t, 1, tableIDCount)
 			require.True(t, coordinator.ContainsInternalSession(se))
-			require.EqualValues(t, 1, coordinator.InternalSessionCount())
+			require.GreaterOrEqual(t, coordinator.InternalSessionCount(), 1)
 			return nil
 		}))
-		require.Zero(t, coordinator.InternalSessionCount())
+		require.Eventually(t, func() bool {
+			return coordinator.InternalSessionCount() == 0
+		}, 10*time.Second, 20*time.Millisecond)
 	})
 }

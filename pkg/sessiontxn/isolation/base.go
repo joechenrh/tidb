@@ -296,6 +296,14 @@ func (p *baseTxnContextProvider) ActivateTxn() (kv.Transaction, error) {
 	}
 
 	txnFuture := p.sctx.GetPreparedTxnFuture()
+
+	// Inject delay before TSO wait for testing maxExecutionTime
+	failpoint.Inject("injectTSOWaitDelay", func(val failpoint.Value) {
+		if delayMs, ok := val.(int); ok {
+			time.Sleep(time.Duration(delayMs) * time.Millisecond)
+		}
+	})
+
 	txn, err := txnFuture.Wait(p.ctx, p.sctx)
 	if err != nil {
 		return nil, err
@@ -447,23 +455,18 @@ func (p *baseTxnContextProvider) getSnapshotByTS(snapshotTS uint64) (kv.Snapshot
 	}
 
 	txnCtx := p.sctx.GetSessionVars().TxnCtx
+
+	var snapshot kv.Snapshot
 	if txn.Valid() && txnCtx.StartTS == txnCtx.GetForUpdateTS() && txnCtx.StartTS == snapshotTS {
-		return txn.GetSnapshot(), nil
+		snapshot = txn.GetSnapshot()
+	} else {
+		snapshot = internal.GetSnapshotWithTS(
+			p.sctx,
+			snapshotTS,
+			temptable.SessionSnapshotInterceptor(p.sctx, p.infoSchema),
+		)
 	}
-
-	sessVars := p.sctx.GetSessionVars()
-	snapshot := internal.GetSnapshotWithTS(
-		p.sctx,
-		snapshotTS,
-		temptable.SessionSnapshotInterceptor(p.sctx, p.infoSchema),
-	)
-
-	replicaReadType := sessVars.GetReplicaRead()
-	if replicaReadType.IsFollowerRead() &&
-		!sessVars.StmtCtx.RCCheckTS &&
-		!sessVars.RcWriteCheckTS {
-		snapshot.SetOption(kv.ReplicaRead, replicaReadType)
-	}
+	snapshot.SetOption(kv.ReplicaRead, p.sctx.GetSessionVars().GetReplicaRead())
 
 	return snapshot, nil
 }

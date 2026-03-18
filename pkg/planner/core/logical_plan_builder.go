@@ -15,7 +15,6 @@
 package core
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -49,14 +48,13 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/opcode"
 	"github.com/pingcap/tidb/pkg/parser/terror"
 	"github.com/pingcap/tidb/pkg/planner/core/base"
-	core_metrics "github.com/pingcap/tidb/pkg/planner/core/metrics"
 	"github.com/pingcap/tidb/pkg/planner/core/operator/logicalop"
+	"github.com/pingcap/tidb/pkg/planner/core/operator/physicalop"
 	"github.com/pingcap/tidb/pkg/planner/core/resolve"
 	"github.com/pingcap/tidb/pkg/planner/core/rule"
 	"github.com/pingcap/tidb/pkg/planner/property"
 	"github.com/pingcap/tidb/pkg/planner/util"
 	"github.com/pingcap/tidb/pkg/planner/util/coreusage"
-	"github.com/pingcap/tidb/pkg/planner/util/debugtrace"
 	"github.com/pingcap/tidb/pkg/planner/util/fixcontrol"
 	"github.com/pingcap/tidb/pkg/planner/util/tablesampler"
 	"github.com/pingcap/tidb/pkg/privilege"
@@ -64,7 +62,6 @@ import (
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 	"github.com/pingcap/tidb/pkg/statistics"
-	"github.com/pingcap/tidb/pkg/statistics/handle"
 	"github.com/pingcap/tidb/pkg/table"
 	"github.com/pingcap/tidb/pkg/table/tables"
 	"github.com/pingcap/tidb/pkg/table/temptable"
@@ -76,12 +73,10 @@ import (
 	"github.com/pingcap/tidb/pkg/util/dbterror/plannererrors"
 	"github.com/pingcap/tidb/pkg/util/hack"
 	h "github.com/pingcap/tidb/pkg/util/hint"
-	"github.com/pingcap/tidb/pkg/util/intest"
 	"github.com/pingcap/tidb/pkg/util/intset"
 	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/pingcap/tidb/pkg/util/plancodec"
 	"github.com/pingcap/tidb/pkg/util/set"
-	"github.com/pingcap/tidb/pkg/util/size"
 	"github.com/pingcap/tipb/go-tipb"
 	"go.uber.org/zap"
 )
@@ -105,7 +100,7 @@ type aggOrderByResolver struct {
 func (a *aggOrderByResolver) Enter(inNode ast.Node) (ast.Node, bool) {
 	a.exprDepth++
 	if n, ok := inNode.(*driver.ParamMarkerExpr); ok {
-		if a.exprDepth == 1 {
+		if a.exprDepth == 1 && canParamMarkerBePositionExpr(n) {
 			_, isNull, isExpectedType := getUintFromNode(a.ctx.GetExprCtx(), n, false)
 			// For constant uint expression in top level, it should be treated as position expression.
 			if !isNull && isExpectedType {
@@ -114,6 +109,14 @@ func (a *aggOrderByResolver) Enter(inNode ast.Node) (ast.Node, bool) {
 		}
 	}
 	return inNode, false
+}
+
+func canParamMarkerBePositionExpr(param *driver.ParamMarkerExpr) bool {
+	if !param.InExecute {
+		return true
+	}
+	allowed, _ := CheckParamTypeInt64orUint64(param)
+	return allowed
 }
 
 func (a *aggOrderByResolver) Leave(inNode ast.Node) (ast.Node, bool) {
@@ -566,7 +569,6 @@ func (b *PlanBuilder) buildJoin(ctx context.Context, joinNode *ast.Join) (base.L
 	// Add join reorder flag regardless of inner join or outer join.
 	b.optFlag = b.optFlag | rule.FlagJoinReOrder
 	b.optFlag |= rule.FlagPredicateSimplification
-	b.optFlag |= rule.FlagConvertOuterToInnerJoin
 	b.optFlag |= rule.FlagEmptySelectionEliminator
 
 	leftPlan, err := b.buildResultSetNode(ctx, joinNode.Left, false)
@@ -599,16 +601,16 @@ func (b *PlanBuilder) buildJoin(ctx context.Context, joinNode *ast.Join) (base.L
 	switch joinNode.Tp {
 	case ast.LeftJoin:
 		// left outer join need to be checked elimination
-		b.optFlag = b.optFlag | rule.FlagEliminateOuterJoin
-		joinPlan.JoinType = logicalop.LeftOuterJoin
+		b.optFlag = b.optFlag | rule.FlagEliminateOuterJoin | rule.FlagOuterJoinToSemiJoin
+		joinPlan.JoinType = base.LeftOuterJoin
 		util.ResetNotNullFlag(joinPlan.Schema(), leftPlan.Schema().Len(), joinPlan.Schema().Len())
 	case ast.RightJoin:
 		// right outer join need to be checked elimination
-		b.optFlag = b.optFlag | rule.FlagEliminateOuterJoin
-		joinPlan.JoinType = logicalop.RightOuterJoin
+		b.optFlag = b.optFlag | rule.FlagEliminateOuterJoin | rule.FlagOuterJoinToSemiJoin
+		joinPlan.JoinType = base.RightOuterJoin
 		util.ResetNotNullFlag(joinPlan.Schema(), 0, leftPlan.Schema().Len())
 	default:
-		joinPlan.JoinType = logicalop.InnerJoin
+		joinPlan.JoinType = base.InnerJoin
 	}
 
 	// Merge sub-plan's FullSchema into this join plan.
@@ -686,7 +688,7 @@ func (b *PlanBuilder) buildJoin(ctx context.Context, joinNode *ast.Join) (base.L
 		onCondition := expression.SplitCNFItems(onExpr)
 		// Keep these expressions as a LogicalSelection upon the inner join, in order to apply
 		// possible decorrelate optimizations. The ON clause is actually treated as a WHERE clause now.
-		if joinPlan.JoinType == logicalop.InnerJoin {
+		if joinPlan.JoinType == base.InnerJoin {
 			sel := logicalop.LogicalSelection{Conditions: onCondition}.Init(b.ctx, b.getSelectOffset())
 			sel.SetChildren(joinPlan)
 			return sel, nil
@@ -790,9 +792,14 @@ func (b *PlanBuilder) coalesceCommonColumns(p *logicalop.LogicalJoin, leftPlan, 
 		commonNames := make([]string, 0, len(lNames))
 		lNameMap := make(map[string]int, len(lNames))
 		rNameMap := make(map[string]int, len(rNames))
-		for _, name := range lNames {
-			// Natural join should ignore _tidb_rowid
-			if name.ColName.L == "_tidb_rowid" {
+		for i, name := range lNames {
+			// Natural join should ignore _tidb_rowid and _tidb_commit_ts
+			if name.ColName.L == model.ExtraHandleName.L ||
+				name.ColName.L == model.ExtraCommitTSName.L ||
+				name.ColName.L == model.ExtraPhysTblIDName.L {
+				continue
+			}
+			if lColumns[i].IsHidden {
 				continue
 			}
 			// record left map
@@ -802,9 +809,14 @@ func (b *PlanBuilder) coalesceCommonColumns(p *logicalop.LogicalJoin, leftPlan, 
 				lNameMap[name.ColName.L] = 1
 			}
 		}
-		for _, name := range rNames {
-			// Natural join should ignore _tidb_rowid
-			if name.ColName.L == "_tidb_rowid" {
+		for i, name := range rNames {
+			// Natural join should ignore _tidb_rowid and _tidb_commit_ts
+			if name.ColName.L == model.ExtraHandleName.L ||
+				name.ColName.L == model.ExtraCommitTSName.L ||
+				name.ColName.L == model.ExtraPhysTblIDName.L {
+				continue
+			}
+			if rColumns[i].IsHidden {
 				continue
 			}
 			// record right map
@@ -832,11 +844,20 @@ func (b *PlanBuilder) coalesceCommonColumns(p *logicalop.LogicalJoin, leftPlan, 
 	// Find out all the common columns and put them ahead.
 	commonLen := 0
 	for i, lName := range lNames {
-		// Natural join should ignore _tidb_rowid
-		if lName.ColName.L == "_tidb_rowid" {
+		// Natural join should ignore _tidb_rowid and _tidb_commit_ts
+		if lName.ColName.L == model.ExtraHandleName.L ||
+			lName.ColName.L == model.ExtraCommitTSName.L ||
+			lName.ColName.L == model.ExtraPhysTblIDName.L {
+			continue
+		}
+		// Hidden columns are internal-only and shuold not participate in NATURAL/USING column matching.
+		if lColumns[i].IsHidden {
 			continue
 		}
 		for j := commonLen; j < len(rNames); j++ {
+			if rColumns[j].IsHidden {
+				continue
+			}
 			if lName.ColName.L != rNames[j].ColName.L {
 				continue
 			}
@@ -886,6 +907,7 @@ func (b *PlanBuilder) coalesceCommonColumns(p *logicalop.LogicalJoin, leftPlan, 
 	copy(names[len(lNames):], rNames[commonLen:])
 
 	conds := make([]expression.Expression, 0, commonLen)
+	redundantColMappings := make([][2]*expression.Column, 0, commonLen)
 	for i := range commonLen {
 		lc, rc := lsc.Columns[i], rsc.Columns[i]
 		cond, err := expression.NewFunction(b.ctx.GetExprCtx(), ast.EQ, types.NewFieldType(mysql.TypeTiny), lc, rc)
@@ -897,14 +919,26 @@ func (b *PlanBuilder) coalesceCommonColumns(p *logicalop.LogicalJoin, leftPlan, 
 			// since FullSchema is derived from left and right schema in upper layer, so rc/lc must be in FullSchema.
 			if joinTp == ast.RightJoin {
 				p.FullNames[p.FullSchema.ColumnIndex(lc)].Redundant = true
+				// Right join keeps right side as canonical output for USING/NATURAL common columns.
+				redundantColMappings = append(redundantColMappings, [2]*expression.Column{lc, rc})
 			} else {
 				p.FullNames[p.FullSchema.ColumnIndex(rc)].Redundant = true
+				// For inner/left join, left side is the canonical visible output.
+				redundantColMappings = append(redundantColMappings, [2]*expression.Column{rc, lc})
 			}
 		}
 	}
 
 	p.SetSchema(expression.NewSchema(schemaCols...))
 	p.SetOutputNames(names)
+	// UPDATE/DELETE paths restore schema/names to merged child outputs after
+	// coalescing. Skip index-based redundant mapping registration here to avoid
+	// stale output-index mappings.
+	if !b.inUpdateStmt && !b.inDeleteStmt {
+		for _, pair := range redundantColMappings {
+			p.RegisterRedundantColumnMapping(pair[0], pair[1])
+		}
+	}
 
 	p.OtherConditions = append(conds, p.OtherConditions...)
 
@@ -927,6 +961,10 @@ func (b *PlanBuilder) buildSelection(ctx context.Context, p base.LogicalPlan, wh
 		if err != nil {
 			return nil, err
 		}
+		p = np
+		if expr == nil {
+			continue
+		}
 		// for case: explain SELECT year+2 as y, SUM(profit) AS profit FROM sales GROUP BY year+2, year+profit WITH ROLLUP having y > 2002;
 		// currently, we succeed to resolve y to (year+2), but fail to resolve (year+2) to grouping col, and to base column function: plus(year, 2) instead.
 		// which will cause this selection being pushed down through Expand OP itself.
@@ -934,10 +972,6 @@ func (b *PlanBuilder) buildSelection(ctx context.Context, p base.LogicalPlan, wh
 		// In expand, we will additionally project (year+2) out as a new column, let's say grouping_col here, and we wanna it can substitute any upper layer's (year+2)
 		expr = b.replaceGroupingFunc(expr)
 
-		p = np
-		if expr == nil {
-			continue
-		}
 		expressions = append(expressions, expr)
 	}
 	cnfExpres := make([]expression.Expression, 0)
@@ -1209,10 +1243,19 @@ func findColFromNaturalUsingJoin(p base.LogicalPlan, col *expression.Column) (na
 	switch x := p.(type) {
 	case *logicalop.LogicalLimit, *logicalop.LogicalSelection, *logicalop.LogicalTopN, *logicalop.LogicalSort, *logicalop.LogicalMaxOneRow:
 		return findColFromNaturalUsingJoin(p.Children()[0], col)
+	case *logicalop.LogicalApply:
+		return findColFromNaturalUsingJoin(p.Children()[0], col)
 	case *logicalop.LogicalJoin:
 		if x.FullSchema != nil {
 			idx := x.FullSchema.ColumnIndex(col)
-			return x.FullNames[idx]
+			if idx >= 0 && idx < len(x.FullNames) {
+				return x.FullNames[idx]
+			}
+		}
+		for _, child := range x.Children() {
+			if mappedName := findColFromNaturalUsingJoin(child, col); mappedName != nil {
+				return mappedName
+			}
 		}
 	}
 	return nil
@@ -1258,7 +1301,8 @@ func (r resolveGroupingTraverseAction) Transform(expr expression.Expression) (re
 
 func (b *PlanBuilder) replaceGroupingFunc(expr expression.Expression) expression.Expression {
 	// current block doesn't have an expand OP, just return it.
-	if b.currentBlockExpand == nil {
+	// expr can be nil when rewrite eliminates a predicate in non-scalar contexts.
+	if b.currentBlockExpand == nil || expr == nil {
 		return expr
 	}
 	// curExpand can supply the DistinctGbyExprs and gid col.
@@ -1734,12 +1778,11 @@ func (b *PlanBuilder) buildSetOpr(ctx context.Context, setOpr *ast.SetOprStmt) (
 func (b *PlanBuilder) buildSemiJoinForSetOperator(
 	leftOriginPlan base.LogicalPlan,
 	rightPlan base.LogicalPlan,
-	joinType logicalop.JoinType) (leftPlan base.LogicalPlan, err error) {
+	joinType base.JoinType) (leftPlan base.LogicalPlan, err error) {
 	leftPlan, err = b.buildDistinct(leftOriginPlan, leftOriginPlan.Schema().Len())
 	if err != nil {
 		return nil, err
 	}
-	b.optFlag |= rule.FlagConvertOuterToInnerJoin
 
 	joinPlan := logicalop.LogicalJoin{JoinType: joinType}.Init(b.ctx, b.getSelectOffset())
 	joinPlan.SetChildren(leftPlan, rightPlan)
@@ -1752,12 +1795,12 @@ func (b *PlanBuilder) buildSemiJoinForSetOperator(
 		if err != nil {
 			return nil, err
 		}
-		_, leftArgIsColumn := eqCond.(*expression.ScalarFunction).GetArgs()[0].(*expression.Column)
-		_, rightArgIsColumn := eqCond.(*expression.ScalarFunction).GetArgs()[1].(*expression.Column)
-		if leftCol.RetType.GetType() != rightCol.RetType.GetType() || !leftArgIsColumn || !rightArgIsColumn {
+		sf := eqCond.(*expression.ScalarFunction)
+		_, _, ok := expression.IsColOpCol(sf)
+		if leftCol.RetType.GetType() != rightCol.RetType.GetType() || !ok {
 			joinPlan.OtherConditions = append(joinPlan.OtherConditions, eqCond)
 		} else {
-			joinPlan.EqualConditions = append(joinPlan.EqualConditions, eqCond.(*expression.ScalarFunction))
+			joinPlan.EqualConditions = append(joinPlan.EqualConditions, sf)
 		}
 	}
 	return joinPlan, nil
@@ -1807,7 +1850,7 @@ func (b *PlanBuilder) buildIntersect(ctx context.Context, selects []ast.Node) (b
 		if rightPlan.Schema().Len() != columnNums {
 			return nil, nil, plannererrors.ErrWrongNumberOfColumnsInSelect.GenWithStackByArgs()
 		}
-		leftPlan, err = b.buildSemiJoinForSetOperator(leftPlan, rightPlan, logicalop.SemiJoin)
+		leftPlan, err = b.buildSemiJoinForSetOperator(leftPlan, rightPlan, base.SemiJoin)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1831,7 +1874,7 @@ func (b *PlanBuilder) buildExcept(ctx context.Context, selects []base.LogicalPla
 			if err != nil {
 				return nil, err
 			}
-			leftPlan, err = b.buildSemiJoinForSetOperator(leftPlan, rightPlan, logicalop.AntiSemiJoin)
+			leftPlan, err = b.buildSemiJoinForSetOperator(leftPlan, rightPlan, base.AntiSemiJoin)
 			if err != nil {
 				return nil, err
 			}
@@ -1993,7 +2036,7 @@ func (b *PlanBuilder) checkOrderByInDistinct(byItem *ast.ByItem, idx int, expr e
 	// Check if referenced columns of expressions in ORDER BY whole match some fields in DISTINCT,
 	// both original expression and alias can be referenced.
 	// e.g.
-	// select distinct a from t order by sin(a);                            ✔
+	// select distinct sin(a) from t order by a;                            ✔
 	// select distinct a, b from t order by a+b;                            ✔
 	// select distinct count(a), sum(a) from t group by b order by sum(a);  ✔
 	cols := expression.ExtractColumns(expr)
@@ -2100,7 +2143,7 @@ func extractLimitCountOffset(ctx expression.BuildContext, limit *ast.Limit) (cou
 	return count, offset, nil
 }
 
-func (b *PlanBuilder) buildLimit(src base.LogicalPlan, limit *ast.Limit) (base.LogicalPlan, error) {
+func (b *PlanBuilder) buildLimit(src base.LogicalPlan, limit *ast.Limit, targetQB ...int) (base.LogicalPlan, error) {
 	b.optFlag = b.optFlag | rule.FlagPushDownTopN
 	// flag it if cte contain limit
 	if b.buildingCTE {
@@ -2117,8 +2160,12 @@ func (b *PlanBuilder) buildLimit(src base.LogicalPlan, limit *ast.Limit) (base.L
 	if count > math.MaxUint64-offset {
 		count = math.MaxUint64 - offset
 	}
+	targetQBOffset := b.getSelectOffset()
+	if len(targetQB) > 0 {
+		targetQBOffset = targetQB[0]
+	}
 	if offset+count == 0 {
-		tableDual := logicalop.LogicalTableDual{RowCount: 0}.Init(b.ctx, b.getSelectOffset())
+		tableDual := logicalop.LogicalTableDual{RowCount: 0}.Init(b.ctx, targetQBOffset)
 		tableDual.SetSchema(src.Schema())
 		tableDual.SetOutputNames(src.OutputNames())
 		return tableDual, nil
@@ -2126,7 +2173,7 @@ func (b *PlanBuilder) buildLimit(src base.LogicalPlan, limit *ast.Limit) (base.L
 	li := logicalop.LogicalLimit{
 		Offset: offset,
 		Count:  count,
-	}.Init(b.ctx, b.getSelectOffset())
+	}.Init(b.ctx, targetQBOffset)
 	if hint := b.TableHints(); hint != nil {
 		li.PreferLimitToCop = hint.PreferLimitToCop
 	}
@@ -2243,6 +2290,16 @@ func (a *havingWindowAndOrderbyExprResolver) resolveFromPlan(v *ast.ColumnNameEx
 		return -1, plannererrors.ErrUnknownColumn.GenWithStackByArgs(v.Name, clauseMsg[a.curClause])
 	}
 	name := outputNames[idx]
+	if join, ok := p.(*logicalop.LogicalJoin); ok &&
+		name != nil &&
+		name.Redundant &&
+		name.OrigTblName.L != "" {
+		// ORDER BY/HAVING name resolution may still be based on FullNames. Remap
+		// redundant qualified base-table columns to canonical join outputs.
+		if mappedCol, mappedName := join.ResolveRedundantColumn(col); mappedCol != nil {
+			col, name = mappedCol, mappedName
+		}
+	}
 	newColName := &ast.ColumnName{
 		Schema: name.DBName,
 		Table:  name.TblName,
@@ -2459,18 +2516,7 @@ func (b *PlanBuilder) resolveHavingAndOrderBy(ctx context.Context, sel *ast.Sele
 				}
 				correlatedCols := coreusage.ExtractCorrelatedCols4LogicalPlan(np)
 				for _, cone := range correlatedCols {
-					var colName *ast.ColumnName
-					for idx, pone := range p.Schema().Columns {
-						if cone.UniqueID == pone.UniqueID {
-							pname := p.OutputNames()[idx]
-							colName = &ast.ColumnName{
-								Schema: pname.DBName,
-								Table:  pname.TblName,
-								Name:   pname.ColName,
-							}
-							break
-						}
-					}
+					colName := findColumnNameByUniqueID(p, cone.UniqueID)
 					if colName != nil {
 						columnNameExpr := &ast.ColumnNameExpr{Name: colName}
 						for _, field := range sel.Fields.Fields {
@@ -2493,6 +2539,112 @@ func (b *PlanBuilder) resolveHavingAndOrderBy(ctx context.Context, sel *ast.Sele
 		}
 	}
 	return havingAggMapper, extractor.aggMapper, nil
+}
+
+type subqueryExprExtractor struct {
+	exprs []ast.ExprNode
+}
+
+// Enter implements Visitor interface.
+func (e *subqueryExprExtractor) Enter(n ast.Node) (ast.Node, bool) {
+	switch subq := n.(type) {
+	case *ast.SubqueryExpr:
+		e.exprs = append(e.exprs, subq)
+		return n, true
+	case *ast.ExistsSubqueryExpr:
+		e.exprs = append(e.exprs, subq)
+		return n, true
+	case *ast.CompareSubqueryExpr:
+		e.exprs = append(e.exprs, subq)
+		return n, true
+	case *ast.PatternInExpr:
+		if subq.Sel == nil {
+			return n, false
+		}
+		e.exprs = append(e.exprs, subq)
+		return n, true
+	}
+	return n, false
+}
+
+// Leave implements Visitor interface.
+func (*subqueryExprExtractor) Leave(n ast.Node) (ast.Node, bool) {
+	return n, true
+}
+
+func findColumnNameByUniqueID(p base.LogicalPlan, uniqueID int64) *ast.ColumnName {
+	for idx, pCol := range p.Schema().Columns {
+		if uniqueID != pCol.UniqueID {
+			continue
+		}
+		pName := p.OutputNames()[idx]
+		return &ast.ColumnName{
+			Schema: pName.DBName,
+			Table:  pName.TblName,
+			Name:   pName.ColName,
+		}
+	}
+	// USING/NATURAL JOIN can keep table-qualified outer references only in FullSchema/FullNames.
+	if join, ok := p.(*logicalop.LogicalJoin); ok && join.FullSchema != nil && len(join.FullNames) != 0 {
+		for idx, pCol := range join.FullSchema.Columns {
+			if uniqueID != pCol.UniqueID {
+				continue
+			}
+			pName := join.FullNames[idx]
+			return &ast.ColumnName{
+				Schema: pName.DBName,
+				Table:  pName.TblName,
+				Name:   pName.ColName,
+			}
+		}
+	}
+	// Selection/Projection/Window and similar unary wrappers can sit above the join that keeps
+	// redundant USING/NATURAL JOIN columns only in FullSchema/FullNames.
+	if len(p.Children()) == 1 {
+		return findColumnNameByUniqueID(p.Children()[0], uniqueID)
+	}
+	return nil
+}
+
+func (b *PlanBuilder) appendAuxiliaryFieldsForSubqueries(ctx context.Context, p base.LogicalPlan, selectFields []*ast.SelectField, nodes ...ast.Node) ([]*ast.SelectField, error) {
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		extractor := &subqueryExprExtractor{}
+		node.Accept(extractor)
+		for _, expr := range extractor.exprs {
+			// Correlated aggregates are handled separately; here we only need the outer columns
+			// so subqueries inside deferred window expressions can still resolve against this query block.
+			// TODO: Reuse the rewritten expression/plan from the pre-build phase instead of rebuilding it
+			// only for correlated outer-column discovery.
+			_, np, err := b.rewrite(ctx, expr, p, nil, true)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+			correlatedCols := coreusage.ExtractCorrelatedCols4LogicalPlan(np)
+			for _, corCol := range correlatedCols {
+				colName := findColumnNameByUniqueID(p, corCol.UniqueID)
+				if colName == nil {
+					continue
+				}
+				columnNameExpr := &ast.ColumnNameExpr{Name: colName}
+				for _, field := range selectFields {
+					if c, ok := field.Expr.(*ast.ColumnNameExpr); ok && c.Name.Match(columnNameExpr.Name) && field.AsName.L == "" {
+						columnNameExpr = nil
+						break
+					}
+				}
+				if columnNameExpr != nil {
+					selectFields = append(selectFields, &ast.SelectField{
+						Auxiliary: true,
+						Expr:      columnNameExpr,
+					})
+				}
+			}
+		}
+	}
+	return selectFields, nil
 }
 
 func (b *PlanBuilder) extractAggFuncsInExprs(exprs []ast.ExprNode) ([]*ast.AggregateFuncExpr, map[*ast.AggregateFuncExpr]int) {
@@ -2547,6 +2699,10 @@ func (b *PlanBuilder) extractCorrelatedAggFuncs(ctx context.Context, p base.Logi
 			corCols = append(corCols, expression.ExtractCorColumns(expr)...)
 			cols = append(cols, expression.ExtractColumns(expr)...)
 		}
+		// If decorrelation is disabled, don't extract correlated aggregates
+		if b.noDecorrelate && len(corCols) > 0 {
+			continue
+		}
 		if len(corCols) > 0 && len(cols) == 0 {
 			outer = append(outer, agg)
 		}
@@ -2557,7 +2713,7 @@ func (b *PlanBuilder) extractCorrelatedAggFuncs(ctx context.Context, p base.Logi
 }
 
 // resolveWindowFunction will process window functions and resolve the columns that don't exist in select fields.
-func (b *PlanBuilder) resolveWindowFunction(sel *ast.SelectStmt, p base.LogicalPlan) (
+func (b *PlanBuilder) resolveWindowFunction(ctx context.Context, sel *ast.SelectStmt, p base.LogicalPlan) (
 	map[*ast.AggregateFuncExpr]int, error) {
 	extractor := &havingWindowAndOrderbyExprResolver{
 		p:            p,
@@ -2598,6 +2754,35 @@ func (b *PlanBuilder) resolveWindowFunction(sel *ast.SelectStmt, p base.LogicalP
 		}
 	}
 	sel.Fields.Fields = extractor.selectFields
+	for _, field := range sel.Fields.Fields {
+		if !ast.HasWindowFlag(field.Expr) {
+			continue
+		}
+		var err error
+		sel.Fields.Fields, err = b.appendAuxiliaryFieldsForSubqueries(ctx, p, sel.Fields.Fields, field.Expr)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for i := range sel.WindowSpecs {
+		var err error
+		sel.Fields.Fields, err = b.appendAuxiliaryFieldsForSubqueries(ctx, p, sel.Fields.Fields, &sel.WindowSpecs[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	if sel.OrderBy != nil {
+		for _, item := range sel.OrderBy.Items {
+			if !ast.HasWindowFlag(item.Expr) {
+				continue
+			}
+			var err error
+			sel.Fields.Fields, err = b.appendAuxiliaryFieldsForSubqueries(ctx, p, sel.Fields.Fields, item.Expr)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	return extractor.aggMapper, nil
 }
 
@@ -2611,6 +2796,9 @@ type correlatedAggregateResolver struct {
 
 	// correlatedAggFuncs stores aggregate functions which belong to outer query
 	correlatedAggFuncs []*ast.AggregateFuncExpr
+
+	// noDecorrelate indicates whether decorrelation should be disabled for this resolver
+	noDecorrelate bool
 }
 
 // Enter implements Visitor interface.
@@ -2666,7 +2854,7 @@ func (r *correlatedAggregateResolver) resolveSelect(sel *ast.SelectStmt) (err er
 
 	hasWindowFuncField := r.b.detectSelectWindow(sel)
 	if hasWindowFuncField {
-		_, err = r.b.resolveWindowFunction(sel, p)
+		_, err = r.b.resolveWindowFunction(r.ctx, sel, p)
 		if err != nil {
 			return err
 		}
@@ -2785,9 +2973,10 @@ func (r *correlatedAggregateResolver) Leave(n ast.Node) (ast.Node, bool) {
 // in the outer query from all the sub-queries inside SELECT fields.
 func (b *PlanBuilder) resolveCorrelatedAggregates(ctx context.Context, sel *ast.SelectStmt, p base.LogicalPlan) (map[*ast.AggregateFuncExpr]int, error) {
 	resolver := &correlatedAggregateResolver{
-		ctx:       ctx,
-		b:         b,
-		outerPlan: p,
+		ctx:           ctx,
+		b:             b,
+		outerPlan:     p,
+		noDecorrelate: b.noDecorrelate,
 	}
 	correlatedAggList := make([]*ast.AggregateFuncExpr, 0)
 	for _, field := range sel.Fields.Fields {
@@ -2862,7 +3051,7 @@ func (g *gbyResolver) Enter(inNode ast.Node) (ast.Node, bool) {
 		return inNode, true
 	case *driver.ParamMarkerExpr:
 		g.isParam = true
-		if g.exprDepth == 1 && !n.UseAsValueInGbyByClause {
+		if g.exprDepth == 1 && !n.UseAsValueInGbyByClause && canParamMarkerBePositionExpr(n) {
 			_, isNull, isExpectedType := getUintFromNode(g.ctx.GetExprCtx(), n, false)
 			// For constant uint expression in top level, it should be treated as position expression.
 			if !isNull && isExpectedType {
@@ -3579,7 +3768,7 @@ func unfoldWildStar(field *ast.SelectField, outputName types.NameSlice, column [
 		}
 		if (dbName.L == "" || dbName.L == name.DBName.L) &&
 			(tblName.L == "" || tblName.L == name.TblName.L) &&
-			col.ID != model.ExtraHandleID && col.ID != model.ExtraPhysTblID {
+			col.ID != model.ExtraHandleID && col.ID != model.ExtraPhysTblID && col.ID != model.ExtraCommitTSID {
 			colName := &ast.ColumnNameExpr{
 				Name: &ast.ColumnName{
 					Schema: name.DBName,
@@ -3669,22 +3858,13 @@ func (b *PlanBuilder) addAliasName(ctx context.Context, selectStmt *ast.SelectSt
 	return resultList, nil
 }
 
-func (b *PlanBuilder) pushHintWithoutTableWarning(hint *ast.TableOptimizerHint) {
-	var sb strings.Builder
-	ctx := format.NewRestoreCtx(0, &sb)
-	if err := hint.Restore(ctx); err != nil {
-		return
-	}
-	b.ctx.GetSessionVars().StmtCtx.SetHintWarning(
-		fmt.Sprintf("Hint %s is inapplicable. Please specify the table names in the arguments.", sb.String()))
-}
-
 func (b *PlanBuilder) pushTableHints(hints []*ast.TableOptimizerHint, currentLevel int) {
-	hints = b.hintProcessor.GetCurrentStmtHints(hints, currentLevel)
-	currentDB := b.ctx.GetSessionVars().CurrentDB
-	warnHandler := b.ctx.GetSessionVars().StmtCtx
+	hints = b.hintProcessor.GetCurrentStmtHints(hints, currentLevel, b.hintState)
+	sessionVars := b.ctx.GetSessionVars()
+	currentDB := sessionVars.CurrentDB
+	warnHandler := sessionVars.StmtCtx
 	planHints, subQueryHintFlags, err := h.ParsePlanHints(hints, currentLevel, currentDB,
-		b.hintProcessor, b.ctx.GetSessionVars().StmtCtx.StraightJoinOrder,
+		b.hintProcessor, sessionVars.StmtCtx.StraightJoinOrder,
 		b.subQueryCtx == handlingInSubquery,
 		b.subQueryCtx == handlingExistsSubquery, b.subQueryCtx == notHandlingSubquery, warnHandler)
 	if err != nil {
@@ -3733,9 +3913,15 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p b
 			return nil, plannererrors.ErrCTERecursiveForbidsAggregation.FastGenByArgs(b.genCTETableNameForError())
 		}
 	}
-	if sel.SelectStmtOpts != nil {
+	// Handle STRAIGHT_JOIN - both keyword and hint forms
+	straightJoinFromKeyword := sel.SelectStmtOpts != nil && sel.SelectStmtOpts.StraightJoin
+	straightJoinFromHint := false
+	if hints := b.TableHints(); hints != nil {
+		straightJoinFromHint = hints.StraightJoinOrder
+	}
+	if straightJoinFromKeyword || straightJoinFromHint {
 		origin := b.inStraightJoin
-		b.inStraightJoin = sel.SelectStmtOpts.StraightJoin
+		b.inStraightJoin = true
 		defer func() { b.inStraightJoin = origin }()
 	}
 
@@ -3844,7 +4030,7 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p b
 			return nil, plannererrors.ErrCTERecursiveForbidsAggregation.FastGenByArgs(b.genCTETableNameForError())
 		}
 
-		windowAggMap, err = b.resolveWindowFunction(sel, p)
+		windowAggMap, err = b.resolveWindowFunction(ctx, sel, p)
 		if err != nil {
 			return nil, err
 		}
@@ -3905,10 +4091,7 @@ func (b *PlanBuilder) buildSelect(ctx context.Context, sel *ast.SelectStmt) (p b
 				// Besides, it will only lock the metioned in `of` part.
 				b.ctx.GetSessionVars().StmtCtx.LockTableIDs[tNameW.TableInfo.ID] = struct{}{}
 			}
-			dbName := tName.Schema.L
-			if dbName == "" {
-				dbName = b.ctx.GetSessionVars().CurrentDB
-			}
+			dbName := getLowerDB(tName.Schema, b.ctx.GetSessionVars())
 			var authErr error
 			if user := b.ctx.GetSessionVars().User; user != nil {
 				authErr = plannererrors.ErrTableaccessDenied.GenWithStackByArgs("SELECT with locking clause", user.AuthUsername, user.AuthHostname, tNameW.Name.L)
@@ -4122,99 +4305,8 @@ func addExtraPhysTblIDColumn4DS(ds *logicalop.DataSource) *expression.Column {
 		ColName:     model.ExtraPhysTblIDName,
 		OrigColName: model.ExtraPhysTblIDName,
 	}))
-	ds.TblCols = append(ds.TblCols, pidCol)
+	ds.AppendTableCol(pidCol)
 	return pidCol
-}
-
-// getStatsTable gets statistics information for a table specified by "tableID".
-// A pseudo statistics table is returned in any of the following scenario:
-// 1. tidb-server started and statistics handle has not been initialized.
-// 2. table row count from statistics is zero.
-// 3. statistics is outdated.
-// Note: please also update getLatestVersionFromStatsTable() when logic in this function changes.
-func getStatsTable(ctx base.PlanContext, tblInfo *model.TableInfo, pid int64) *statistics.Table {
-	var statsHandle *handle.Handle
-	dom := domain.GetDomain(ctx)
-	if dom != nil {
-		statsHandle = dom.StatsHandle()
-	}
-	var usePartitionStats, countIs0, pseudoStatsForUninitialized, pseudoStatsForOutdated bool
-	var statsTbl *statistics.Table
-	if ctx.GetSessionVars().StmtCtx.EnableOptimizerDebugTrace {
-		debugtrace.EnterContextCommon(ctx)
-		defer func() {
-			debugTraceGetStatsTbl(ctx,
-				tblInfo,
-				pid,
-				statsHandle == nil,
-				usePartitionStats,
-				countIs0,
-				pseudoStatsForUninitialized,
-				pseudoStatsForOutdated,
-				statsTbl,
-			)
-			debugtrace.LeaveContextCommon(ctx)
-		}()
-	}
-	// 1. tidb-server started and statistics handle has not been initialized.
-	if statsHandle == nil {
-		return statistics.PseudoTable(tblInfo, false, true)
-	}
-
-	if pid == tblInfo.ID || ctx.GetSessionVars().StmtCtx.UseDynamicPartitionPrune() {
-		statsTbl = statsHandle.GetPhysicalTableStats(tblInfo.ID, tblInfo)
-	} else {
-		usePartitionStats = true
-		statsTbl = statsHandle.GetPhysicalTableStats(pid, tblInfo)
-	}
-	intest.Assert(statsTbl.ColAndIdxExistenceMap != nil, "The existence checking map must not be nil.")
-
-	allowPseudoTblTriggerLoading := false
-	// In OptObjectiveDeterminate mode, we need to ignore the real-time stats.
-	// To achieve this, we copy the statsTbl and reset the real-time stats fields (set ModifyCount to 0 and set
-	// RealtimeCount to the row count from the ANALYZE, which is fetched from loaded stats in GetAnalyzeRowCount()).
-	if ctx.GetSessionVars().GetOptObjective() == vardef.OptObjectiveDeterminate {
-		analyzeCount := max(int64(statsTbl.GetAnalyzeRowCount()), 0)
-		// If the two fields are already the values we want, we don't need to modify it, and also we don't need to copy.
-		if statsTbl.RealtimeCount != analyzeCount || statsTbl.ModifyCount != 0 {
-			// Here is a case that we need specially care about:
-			// The original stats table from the stats cache is not a pseudo table, but the analyze row count is 0 (probably
-			// because of no col/idx stats are loaded), which will makes it a pseudo table according to the rule 2 below.
-			// Normally, a pseudo table won't trigger stats loading since we assume it means "no stats available", but
-			// in such case, we need it able to trigger stats loading.
-			// That's why we use the special allowPseudoTblTriggerLoading flag here.
-			if !statsTbl.Pseudo && statsTbl.RealtimeCount > 0 && analyzeCount == 0 {
-				allowPseudoTblTriggerLoading = true
-			}
-			// Copy it so we can modify the ModifyCount and the RealtimeCount safely.
-			statsTbl = statsTbl.ShallowCopy()
-			statsTbl.RealtimeCount = analyzeCount
-			statsTbl.ModifyCount = 0
-		}
-	}
-
-	// 2. table row count from statistics is zero.
-	if statsTbl.RealtimeCount == 0 {
-		countIs0 = true
-		core_metrics.PseudoEstimationNotAvailable.Inc()
-		return statistics.PseudoTable(tblInfo, allowPseudoTblTriggerLoading, true)
-	}
-
-	// 3. statistics is uninitialized or outdated.
-	pseudoStatsForUninitialized = !statsTbl.IsInitialized()
-	pseudoStatsForOutdated = ctx.GetSessionVars().GetEnablePseudoForOutdatedStats() && statsTbl.IsOutdated()
-	if pseudoStatsForUninitialized || pseudoStatsForOutdated {
-		tbl := *statsTbl
-		tbl.Pseudo = true
-		statsTbl = &tbl
-		if pseudoStatsForUninitialized {
-			core_metrics.PseudoEstimationNotAvailable.Inc()
-		} else {
-			core_metrics.PseudoEstimationOutdate.Inc()
-		}
-	}
-
-	return statsTbl
 }
 
 // getLatestVersionFromStatsTable gets statistics information for a table specified by "tableID", and get the max
@@ -4615,7 +4707,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 				// Because of the nested views, so we should check the left table list in hint when build the data source from the view inside the current view.
 				currentQBNameMap4View[qbName] = viewQBNameHintTable[1:]
 				currentViewHints[qbName] = b.hintProcessor.ViewQBNameToHints[qbName]
-				b.hintProcessor.ViewQBNameUsed[qbName] = struct{}{}
+				b.hintProcessor.MarkViewQBNameUsed(qbName, b.hintState)
 			}
 		}
 		return b.BuildDataSourceFromView(ctx, dbName, tableInfo, currentQBNameMap4View, currentViewHints)
@@ -4713,7 +4805,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 	allPaths := make([]*util.AccessPath, len(possiblePaths))
 	copy(allPaths, possiblePaths)
 
-	countCnt := len(columns) + 1 // +1 for an extra handle column
+	countCnt := len(columns) + 2 // +1 for an extra handle column and extra commit ts column
 	ds := logicalop.DataSource{
 		DBName:                 dbName,
 		TableAsName:            asName,
@@ -4728,6 +4820,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		Columns:                make([]*model.ColumnInfo, 0, countCnt),
 		PartitionNames:         tn.PartitionNames,
 		TblCols:                make([]*expression.Column, 0, countCnt),
+		TblColsByID:            make(map[int64]*expression.Column, countCnt),
 		PreferPartitions:       make(map[int][]ast.CIStr),
 		IS:                     b.is,
 		IsForUpdateRead:        b.isForUpdateRead,
@@ -4757,7 +4850,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 			handleCols = util.NewIntHandleCols(newCol)
 		}
 		schema.Append(newCol)
-		ds.TblCols = append(ds.TblCols, newCol)
+		ds.AppendTableCol(newCol)
 	}
 	// We append an extra handle column to the schema when the handle
 	// column is not the primary key of "ds".
@@ -4765,7 +4858,10 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		if tableInfo.IsCommonHandle {
 			primaryIdx := tables.FindPrimaryIndex(tableInfo)
 			handleCols = util.NewCommonHandleCols(tableInfo, primaryIdx, ds.TblCols)
-		} else {
+		} else if !tbl.Type().IsClusterTable() {
+			// Cluster tables are memory tables that don't support ExtraHandleID.
+			// ExtraHandleID would cause "Column ID -1 not found" errors when
+			// coprocessor requests are sent to other TiDB nodes.
 			extraCol := ds.NewExtraHandleSchemaCol()
 			handleCols = util.NewIntHandleCols(extraCol)
 			ds.Columns = append(ds.Columns, model.NewExtraHandleColInfo())
@@ -4776,8 +4872,22 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 				ColName:     model.ExtraHandleName,
 				OrigColName: model.ExtraHandleName,
 			})
-			ds.TblCols = append(ds.TblCols, extraCol)
+			ds.AppendTableCol(extraCol)
 		}
+	}
+	// Append extra commit ts column to the schema.
+	// Cluster tables are memory tables that don't support extra column IDs.
+	if !tbl.Type().IsClusterTable() {
+		commitTSCol := ds.NewExtraCommitTSSchemaCol()
+		ds.Columns = append(ds.Columns, model.NewExtraCommitTSColInfo())
+		schema.Append(commitTSCol)
+		names = append(names, &types.FieldName{
+			DBName:      dbName,
+			TblName:     tableInfo.Name,
+			ColName:     model.ExtraCommitTSName,
+			OrigColName: model.ExtraCommitTSName,
+		})
+		ds.AppendTableCol(commitTSCol)
 	}
 	ds.HandleCols = handleCols
 	ds.UnMutableHandleCols = handleCols
@@ -4812,12 +4922,12 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 
 	// Init CommonHandleCols and CommonHandleLens for data source.
 	if tableInfo.IsCommonHandle {
-		ds.CommonHandleCols, ds.CommonHandleLens = expression.IndexInfo2Cols(ds.Columns, ds.Schema().Columns, tables.FindPrimaryIndex(tableInfo))
+		ds.CommonHandleCols, ds.CommonHandleLens = util.IndexInfo2FullCols(ds.Columns, ds.Schema().Columns, tables.FindPrimaryIndex(tableInfo))
 	}
 	// Init FullIdxCols, FullIdxColLens for accessPaths.
 	for _, path := range ds.AllPossibleAccessPaths {
 		if !path.IsIntHandlePath {
-			path.FullIdxCols, path.FullIdxColLens = expression.IndexInfo2Cols(ds.Columns, ds.Schema().Columns, path.Index)
+			path.FullIdxCols, path.FullIdxColLens = util.IndexInfo2FullCols(ds.Columns, ds.Schema().Columns, path.Index)
 
 			// check whether the path's index has a tidb_shard() prefix and the index column count
 			// more than 1. e.g. index(tidb_shard(a), a)
@@ -5097,24 +5207,27 @@ func (b *PlanBuilder) BuildDataSourceFromView(ctx context.Context, dbName ast.CI
 
 	hintProcessor.ViewQBNameToTable = qbNameMap4View
 	hintProcessor.ViewQBNameToHints = viewHints
-	hintProcessor.ViewQBNameUsed = make(map[string]struct{})
-	hintProcessor.QBOffsetToHints = currentQbHints
 	hintProcessor.QBNameToSelOffset = currentQbNameMap
+	hintState := hintProcessor.NewBuildState()
+	hintState.QBOffsetToHints = currentQbHints
 
 	originHintProcessor := b.hintProcessor
+	originHintState := b.hintState
 	originPlannerSelectBlockAsName := b.ctx.GetSessionVars().PlannerSelectBlockAsName.Load()
 	b.hintProcessor = hintProcessor
+	b.hintState = hintState
 	newPlannerSelectBlockAsName := make([]ast.HintTable, hintProcessor.MaxSelectStmtOffset()+1)
 	b.ctx.GetSessionVars().PlannerSelectBlockAsName.Store(&newPlannerSelectBlockAsName)
 	defer func() {
-		b.hintProcessor.HandleUnusedViewHints()
+		b.hintProcessor.SetWarns(b.hintProcessor.HandleUnusedViewHints(b.hintState, nil))
 		b.hintProcessor = originHintProcessor
+		b.hintState = originHintState
 		b.ctx.GetSessionVars().PlannerSelectBlockAsName.Store(originPlannerSelectBlockAsName)
 	}()
 	nodeW := resolve.NewNodeWWithCtx(selectNode, b.resolveCtx)
 	selectLogicalPlan, err := b.Build(ctx, nodeW)
 	if err != nil {
-		logutil.BgLogger().Error("build plan for view failed", zap.Error(err))
+		logutil.BgLogger().Warn("build plan for view failed", zap.Error(err))
 		if terror.ErrorNotEqual(err, plannererrors.ErrViewRecursive) &&
 			terror.ErrorNotEqual(err, plannererrors.ErrNoSuchTable) &&
 			terror.ErrorNotEqual(err, plannererrors.ErrInternal) &&
@@ -5208,8 +5321,8 @@ func (b *PlanBuilder) buildProjUponView(_ context.Context, dbName ast.CIStr, tab
 
 // buildApplyWithJoinType builds apply plan with outerPlan and innerPlan, which apply join with particular join type for
 // every row from outerPlan and the whole innerPlan.
-func (b *PlanBuilder) buildApplyWithJoinType(outerPlan, innerPlan base.LogicalPlan, tp logicalop.JoinType, markNoDecorrelate bool) base.LogicalPlan {
-	b.optFlag = b.optFlag | rule.FlagPredicatePushDown | rule.FlagBuildKeyInfo | rule.FlagDecorrelate | rule.FlagConvertOuterToInnerJoin | rule.FlagConstantPropagation
+func (b *PlanBuilder) buildApplyWithJoinType(outerPlan, innerPlan base.LogicalPlan, tp base.JoinType, markNoDecorrelate bool) base.LogicalPlan {
+	b.optFlag = b.optFlag | rule.FlagPredicatePushDown | rule.FlagBuildKeyInfo | rule.FlagDecorrelate | rule.FlagConstantPropagation
 	ap := logicalop.LogicalApply{LogicalJoin: logicalop.LogicalJoin{JoinType: tp}, NoDecorrelate: markNoDecorrelate}.Init(b.ctx, b.getSelectOffset())
 	ap.SetChildren(outerPlan, innerPlan)
 	ap.SetOutputNames(make([]*types.FieldName, outerPlan.Schema().Len()+innerPlan.Schema().Len()))
@@ -5217,7 +5330,7 @@ func (b *PlanBuilder) buildApplyWithJoinType(outerPlan, innerPlan base.LogicalPl
 	ap.SetSchema(expression.MergeSchema(outerPlan.Schema(), innerPlan.Schema()))
 	setIsInApplyForCTE(innerPlan, ap.Schema())
 	// Note that, tp can only be LeftOuterJoin or InnerJoin, so we don't consider other outer joins.
-	if tp == logicalop.LeftOuterJoin {
+	if tp == base.LeftOuterJoin {
 		b.optFlag = b.optFlag | rule.FlagEliminateOuterJoin
 		util.ResetNotNullFlag(ap.Schema(), outerPlan.Schema().Len(), ap.Schema().Len())
 	}
@@ -5273,7 +5386,6 @@ func (b *PlanBuilder) buildMaxOneRow(p base.LogicalPlan) base.LogicalPlan {
 }
 
 func (b *PlanBuilder) buildSemiJoin(outerPlan, innerPlan base.LogicalPlan, onCondition []expression.Expression, asScalar, not, forceRewrite bool) (*logicalop.LogicalJoin, error) {
-	b.optFlag |= rule.FlagConvertOuterToInnerJoin
 	joinPlan := logicalop.LogicalJoin{}.Init(b.ctx, b.getSelectOffset())
 	for i, expr := range onCondition {
 		onCondition[i] = expr.Decorrelate(outerPlan.Schema())
@@ -5291,21 +5403,23 @@ func (b *PlanBuilder) buildSemiJoin(outerPlan, innerPlan base.LogicalPlan, onCon
 		joinPlan.SetOutputNames(append(joinPlan.OutputNames(), types.EmptyName))
 		joinPlan.SetSchema(newSchema)
 		if not {
-			joinPlan.JoinType = logicalop.AntiLeftOuterSemiJoin
+			joinPlan.JoinType = base.AntiLeftOuterSemiJoin
 		} else {
-			joinPlan.JoinType = logicalop.LeftOuterSemiJoin
+			joinPlan.JoinType = base.LeftOuterSemiJoin
 		}
 	} else {
 		joinPlan.SetSchema(outerPlan.Schema().Clone())
 		if not {
-			joinPlan.JoinType = logicalop.AntiSemiJoin
+			joinPlan.JoinType = base.AntiSemiJoin
 		} else {
-			joinPlan.JoinType = logicalop.SemiJoin
+			joinPlan.JoinType = base.SemiJoin
 		}
 	}
 	// Apply forces to choose hash join currently, so don't worry the hints will take effect if the semi join is in one apply.
 	joinPlan.SetPreferredJoinTypeAndOrder(b.TableHints())
-	if forceRewrite {
+	// Make the session variable behave like the hint by setting the same prefer bit.
+	b.ctx.GetSessionVars().RecordRelevantOptVar(vardef.TiDBOptEnableSemiJoinRewrite)
+	if forceRewrite || b.ctx.GetSessionVars().EnableSemiJoinRewrite {
 		joinPlan.PreferJoinType |= h.PreferRewriteSemiJoin
 		b.optFlag |= rule.FlagSemiJoinRewrite
 	}
@@ -5321,67 +5435,13 @@ func getTableOffset(names []*types.FieldName, handleName *types.FieldName) (int,
 	return -1, errors.Errorf("Couldn't get column information when do update/delete")
 }
 
-// TblColPosInfo represents an mapper from column index to handle index.
-type TblColPosInfo struct {
-	TblID int64
-	// Start and End represent the ordinal range [Start, End) of the consecutive columns.
-	Start, End int
-	// HandleOrdinal represents the ordinal of the handle column.
-	HandleCols util.HandleCols
-
-	// IndexesRowLayout store the row layout of indexes. We need it if column pruning happens.
-	// If it's nil, means no column pruning happens.
-	IndexesRowLayout table.IndexesLayout
-}
-
-// MemoryUsage return the memory usage of TblColPosInfo
-func (t *TblColPosInfo) MemoryUsage() (sum int64) {
-	if t == nil {
-		return
-	}
-
-	sum = size.SizeOfInt64 + size.SizeOfInt*2
-	if t.HandleCols != nil {
-		sum += t.HandleCols.MemoryUsage()
-	}
-	return
-}
-
-// Cmp compares two TblColPosInfo by their Start field.
-func (t *TblColPosInfo) Cmp(a TblColPosInfo) int {
-	return cmp.Compare(t.Start, a.Start)
-}
-
-// TblColPosInfoSlice attaches the methods of sort.Interface to []TblColPosInfos sorting in increasing order.
-type TblColPosInfoSlice []TblColPosInfo
-
-// Len implements sort.Interface#Len.
-func (c TblColPosInfoSlice) Len() int {
-	return len(c)
-}
-
-// FindTblIdx finds the ordinal of the corresponding access column.
-func (c TblColPosInfoSlice) FindTblIdx(colOrdinal int) (int, bool) {
-	if len(c) == 0 {
-		return 0, false
-	}
-	// find the smallest index of the range that its start great than colOrdinal.
-	// @see https://godoc.org/sort#Search
-	rangeBehindOrdinal := sort.Search(len(c), func(i int) bool { return c[i].Start > colOrdinal })
-	if rangeBehindOrdinal == 0 {
-		return 0, false
-	}
-	return rangeBehindOrdinal - 1, true
-}
-
 // buildColumns2HandleWithWrtiableColumns builds columns to handle mapping.
 // This func is called by Update and can only see writable columns.
 func buildColumns2HandleWithWrtiableColumns(
 	names []*types.FieldName,
 	tblID2Handle map[int64][]util.HandleCols,
 	tblID2Table map[int64]table.Table,
-) (TblColPosInfoSlice, error) {
-	var cols2Handles TblColPosInfoSlice
+) (cols2Handles physicalop.TblColPosInfoSlice, err error) {
 	for tblID, handleCols := range tblID2Handle {
 		tbl := tblID2Table[tblID]
 		tblLen := len(tbl.WritableCols())
@@ -5391,10 +5451,10 @@ func buildColumns2HandleWithWrtiableColumns(
 				return nil, err
 			}
 			end := offset + tblLen
-			cols2Handles = append(cols2Handles, TblColPosInfo{TblID: tblID, Start: offset, End: end, HandleCols: handleCol})
+			cols2Handles = append(cols2Handles, physicalop.TblColPosInfo{TblID: tblID, Start: offset, End: end, HandleCols: handleCol})
 		}
 	}
-	slices.SortFunc(cols2Handles, func(a, b TblColPosInfo) int {
+	slices.SortFunc(cols2Handles, func(a, b physicalop.TblColPosInfo) int {
 		return a.Cmp(b)
 	})
 	return cols2Handles, nil
@@ -5417,17 +5477,8 @@ func pruneAndBuildColPositionInfoForDelete(
 	tblID2Handle map[int64][]util.HandleCols,
 	tblID2Table map[int64]table.Table,
 	hasFK bool,
-) (TblColPosInfoSlice, *bitset.BitSet, error) {
-	var nonPruned *bitset.BitSet
-	// If there is foreign key, we can't prune the columns.
-	// Use a very relax check for foreign key cascades and checks.
-	// If there's one table containing foreign keys, all of the tables would not do pruning.
-	// It should be strict in the future or just support pruning column when there is foreign key.
-	if !hasFK {
-		nonPruned = bitset.New(uint(len(names)))
-		nonPruned.SetAll()
-	}
-	cols2PosInfos := make(TblColPosInfoSlice, 0, len(tblID2Handle))
+) (physicalop.TblColPosInfoSlice, *bitset.BitSet, error) {
+	cols2PosInfos := make(physicalop.TblColPosInfoSlice, 0, len(tblID2Handle))
 	for tid, handleCols := range tblID2Handle {
 		for _, handleCol := range handleCols {
 			curColPosInfo, err := initColPosInfo(tid, names, handleCol)
@@ -5438,25 +5489,56 @@ func pruneAndBuildColPositionInfoForDelete(
 		}
 	}
 	// Sort by start position. To do the later column pruning.
-	slices.SortFunc(cols2PosInfos, func(a, b TblColPosInfo) int {
+	slices.SortFunc(cols2PosInfos, func(a, b physicalop.TblColPosInfo) int {
 		return a.Cmp(b)
 	})
-	prunedColCnt := 0
+	nonPruned := bitset.New(uint(len(names)))
+	nonPruned.SetAll()
+	// Always prune the `_tidb_commit_ts` column.
+	for i, name := range names {
+		if name.ColName.L == model.ExtraCommitTSName.L {
+			nonPruned.Clear(uint(i))
+			continue
+		}
+	}
+	// prunedColCnt records how many columns in `names` have been pruned before the current table (before the current
+	// TblColPosInfo.Start). To avoid repeatedly counting the pruned columns, we use nextCheckIdx to record
+	// the next position to check.
+	var prunedColCnt, nextCheckIdx int
 	var err error
 	for i := range cols2PosInfos {
 		cols2PosInfo := &cols2PosInfos[i]
+		for j := nextCheckIdx; j < cols2PosInfo.Start; j++ {
+			if !nonPruned.Test(uint(j)) {
+				prunedColCnt++
+			}
+		}
+		nextCheckIdx = cols2PosInfo.Start
+
 		tbl := tblID2Table[cols2PosInfo.TblID]
 		tblInfo := tbl.Meta()
-		// If it's partitioned table, or has foreign keys, or is point get plan, we can't prune the columns, currently.
+		// If it's partitioned table, or has foreign keys, or has partial index, or is point get plan, we can't prune the columns, currently.
 		// nonPrunedSet will be nil if it's a point get or has foreign keys.
-		if tblInfo.GetPartitionInfo() != nil || hasFK || nonPruned == nil {
-			err = buildSingleTableColPosInfoForDelete(tbl, cols2PosInfo)
+		// If there is foreign key, we can't prune the columns.
+		// Use a very relax check for foreign key cascades and checks.
+		// If there's one table containing foreign keys, all of the tables would not do pruning.
+		// It should be strict in the future or just support pruning column when there is foreign key.
+		skipPruning := tblInfo.GetPartitionInfo() != nil || hasFK || nonPruned == nil
+		for _, idx := range tblInfo.Indices {
+			if len(idx.ConditionExprString) > 0 {
+				// If the index has a partial index condition, we can't prune the columns.
+				skipPruning = true
+				break
+			}
+		}
+		if skipPruning {
+			err = buildSingleTableColPosInfoForDelete(tbl, cols2PosInfo, prunedColCnt)
 			if err != nil {
 				return nil, nil, err
 			}
 			continue
 		}
-		prunedColCnt, err = pruneAndBuildSingleTableColPosInfoForDelete(tbl, tblInfo.Name.O, names, cols2PosInfo, prunedColCnt, nonPruned)
+		err = pruneAndBuildSingleTableColPosInfoForDelete(tbl, tblInfo.Name.O, names, cols2PosInfo, prunedColCnt, nonPruned)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -5467,12 +5549,12 @@ func pruneAndBuildColPositionInfoForDelete(
 // initColPosInfo initializes the column position information.
 // It's used before we call pruneAndBuildSingleTableColPosInfoForDelete or buildSingleTableColPosInfoForDelete.
 // It initializes the needed information for the following pruning: the tid, starting position and the handle column.
-func initColPosInfo(tid int64, names []*types.FieldName, handleCol util.HandleCols) (TblColPosInfo, error) {
+func initColPosInfo(tid int64, names []*types.FieldName, handleCol util.HandleCols) (physicalop.TblColPosInfo, error) {
 	offset, err := getTableOffset(names, names[handleCol.GetCol(0).Index])
 	if err != nil {
-		return TblColPosInfo{}, err
+		return physicalop.TblColPosInfo{}, err
 	}
-	return TblColPosInfo{
+	return physicalop.TblColPosInfo{
 		TblID:      tid,
 		Start:      offset,
 		HandleCols: handleCol,
@@ -5481,12 +5563,13 @@ func initColPosInfo(tid int64, names []*types.FieldName, handleCol util.HandleCo
 
 // buildSingleTableColPosInfoForDelete builds columns mapping for delete without pruning any columns.
 // It's temp code path for partition table, foreign key and point get plan.
-func buildSingleTableColPosInfoForDelete(
-	tbl table.Table,
-	colPosInfo *TblColPosInfo,
-) error {
+func buildSingleTableColPosInfoForDelete(tbl table.Table, colPosInfo *physicalop.TblColPosInfo, prePrunedCount int) error {
 	tblLen := len(tbl.DeletableCols())
+	colPosInfo.Start -= prePrunedCount
 	colPosInfo.End = colPosInfo.Start + tblLen
+	for col := range colPosInfo.HandleCols.IterColumns() {
+		col.Index -= prePrunedCount
+	}
 	return nil
 }
 
@@ -5496,10 +5579,10 @@ func pruneAndBuildSingleTableColPosInfoForDelete(
 	t table.Table,
 	tableName string,
 	names []*types.FieldName,
-	colPosInfo *TblColPosInfo,
+	colPosInfo *physicalop.TblColPosInfo,
 	prePrunedCount int,
 	nonPrunedSet *bitset.BitSet,
-) (int, error) {
+) error {
 	// Columns can be seen by DELETE are the deletable columns.
 	deletableCols := t.DeletableCols()
 	deletableIdxs := t.DeletableIndices()
@@ -5519,7 +5602,7 @@ func pruneAndBuildSingleTableColPosInfoForDelete(
 	for _, idx := range deletableIdxs {
 		for _, col := range idx.Meta().Columns {
 			if col.Offset+originalStart >= len(names) || deletableCols[col.Offset].Name.L != names[col.Offset+originalStart].ColName.L {
-				return 0, plannererrors.ErrDeleteNotFoundColumn.GenWithStackByArgs(col.Name.O, tableName)
+				return plannererrors.ErrDeleteNotFoundColumn.GenWithStackByArgs(col.Name.O, tableName)
 			}
 			fixedPos[col.Offset] = 0
 		}
@@ -5566,7 +5649,7 @@ func pruneAndBuildSingleTableColPosInfoForDelete(
 	colPosInfo.End = colPosInfo.Start + tblLen - pruned
 	colPosInfo.IndexesRowLayout = indexColMap
 
-	return prePrunedCount + pruned, nil
+	return nil
 }
 
 func (b *PlanBuilder) buildUpdate(ctx context.Context, update *ast.UpdateStmt) (base.Plan, error) {
@@ -5600,10 +5683,7 @@ func (b *PlanBuilder) buildUpdate(ctx context.Context, update *ast.UpdateStmt) (
 	nodeW := resolve.NewNodeWWithCtx(update.TableRefs.TableRefs, b.resolveCtx)
 	tableList := ExtractTableList(nodeW, false)
 	for _, t := range tableList {
-		dbName := t.Schema.L
-		if dbName == "" {
-			dbName = b.ctx.GetSessionVars().CurrentDB
-		}
+		dbName := getLowerDB(t.Schema, b.ctx.GetSessionVars())
 		// Avoid adding CTE table to the SELECT privilege list, maybe we have better way to do this?
 		if _, ok := b.nameMapCTE[t.Name.L]; !ok {
 			b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SelectPriv, dbName, t.Name.L, "", nil)
@@ -5650,6 +5730,13 @@ func (b *PlanBuilder) buildUpdate(ctx context.Context, update *ast.UpdateStmt) (
 	proj.SetOutputNames(make(types.NameSlice, len(p.OutputNames())))
 	copy(proj.OutputNames(), p.OutputNames())
 	copy(proj.Schema().Columns, p.Schema().Columns[:oldSchemaLen])
+	for i := len(proj.OutputNames()) - 1; i >= 0; i-- {
+		if proj.OutputNames()[i].ColName.L == model.ExtraCommitTSName.L {
+			proj.SetOutputNames(slices.Delete(proj.OutputNames(), i, i+1))
+			proj.Schema().Columns = slices.Delete(proj.Schema().Columns, i, i+1)
+			proj.Exprs = slices.Delete(proj.Exprs, i, i+1)
+		}
+	}
 	proj.SetChildren(p)
 	p = proj
 
@@ -5663,7 +5750,7 @@ func (b *PlanBuilder) buildUpdate(ctx context.Context, update *ast.UpdateStmt) (
 	}
 	p = np
 
-	updt := Update{
+	updt := physicalop.Update{
 		OrderedList:               orderedList,
 		AllAssignmentsAreConstant: allAssignmentsAreConstant,
 		VirtualAssignmentsOffset:  len(update.List),
@@ -5693,21 +5780,9 @@ func (b *PlanBuilder) buildUpdate(ctx context.Context, update *ast.UpdateStmt) (
 		return nil, err
 	}
 	updt.PartitionedTable = b.partitionedTable
-	updt.tblID2Table = tblID2table
-	err = updt.buildOnUpdateFKTriggers(b.ctx, b.is, tblID2table)
+	updt.TblID2Table = tblID2table
+	err = updt.BuildOnUpdateFKTriggers(b.ctx, b.is, tblID2table)
 	return updt, err
-}
-
-// GetUpdateColumnsInfo get the update columns info.
-func GetUpdateColumnsInfo(tblID2Table map[int64]table.Table, tblColPosInfos TblColPosInfoSlice, size int) []*table.Column {
-	colsInfo := make([]*table.Column, size)
-	for _, content := range tblColPosInfos {
-		tbl := tblID2Table[content.TblID]
-		for i, c := range tbl.WritableCols() {
-			colsInfo[content.Start+i] = c
-		}
-	}
-	return colsInfo
 }
 
 type tblUpdateInfo struct {
@@ -5717,7 +5792,7 @@ type tblUpdateInfo struct {
 }
 
 // CheckUpdateList checks all related columns in updatable state.
-func CheckUpdateList(assignFlags []int, updt *Update, newTblID2Table map[int64]table.Table) error {
+func CheckUpdateList(assignFlags []int, updt *physicalop.Update, newTblID2Table map[int64]table.Table) error {
 	updateFromOtherAlias := make(map[int64]tblUpdateInfo)
 	for _, content := range updt.TblColPosInfos {
 		tbl := newTblID2Table[content.TblID]
@@ -5820,7 +5895,7 @@ func (b *PlanBuilder) buildUpdateLists(ctx context.Context, tableList []*ast.Tab
 		columnFullName := fmt.Sprintf("%s.%s.%s", name.DBName.L, name.TblName.L, name.ColName.L)
 		// We save a flag for the column in map `modifyColumns`
 		// This flag indicated if assign keyword `DEFAULT` to the column
-		modifyColumns[columnFullName] = IsDefaultExprSameColumn(p.OutputNames()[idx:idx+1], assign.Expr)
+		modifyColumns[columnFullName] = physicalop.IsDefaultExprSameColumn(p.OutputNames()[idx:idx+1], assign.Expr)
 	}
 
 	// If columns in set list contains generated columns, raise error.
@@ -5892,7 +5967,7 @@ func (b *PlanBuilder) buildUpdateLists(ctx context.Context, tableList []*ast.Tab
 		var np base.LogicalPlan
 		if i < len(list) {
 			// If assign `DEFAULT` to column, fill the `defaultExpr.Name` before rewrite expression
-			if expr := extractDefaultExpr(assign.Expr); expr != nil {
+			if expr := physicalop.ExtractDefaultExpr(assign.Expr); expr != nil {
 				expr.Name = assign.Column
 			}
 			newExpr, np, err = b.rewrite(ctx, assign.Expr, p, nil, true)
@@ -5958,37 +6033,11 @@ func (b *PlanBuilder) buildUpdateLists(ctx context.Context, tableList []*ast.Tab
 			dbName = dbNameTmp
 		}
 		if dbName == "" {
-			dbName = b.ctx.GetSessionVars().CurrentDB
+			dbName = strings.ToLower(b.ctx.GetSessionVars().CurrentDB)
 		}
 		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.UpdatePriv, dbName, name.OrigTblName.L, "", nil)
 	}
 	return newList, p, allAssignmentsAreConstant, nil
-}
-
-// extractDefaultExpr extract a `DefaultExpr` from `ExprNode`,
-// If it is a `DEFAULT` function like `DEFAULT(a)`, return nil.
-// Only if it is `DEFAULT` keyword, it will return the `DefaultExpr`.
-func extractDefaultExpr(node ast.ExprNode) *ast.DefaultExpr {
-	if expr, ok := node.(*ast.DefaultExpr); ok && expr.Name == nil {
-		return expr
-	}
-	return nil
-}
-
-// IsDefaultExprSameColumn - DEFAULT or col = DEFAULT(col)
-func IsDefaultExprSameColumn(names types.NameSlice, node ast.ExprNode) bool {
-	if expr, ok := node.(*ast.DefaultExpr); ok {
-		if expr.Name == nil {
-			// col = DEFAULT
-			return true
-		}
-		refIdx, err := expression.FindFieldName(names, expr.Name)
-		if refIdx == 0 && err == nil {
-			// col = DEFAULT(col)
-			return true
-		}
-	}
-	return false
 }
 
 func (b *PlanBuilder) buildDelete(ctx context.Context, ds *ast.DeleteStmt) (base.Plan, error) {
@@ -6060,7 +6109,7 @@ func (b *PlanBuilder) buildDelete(ctx context.Context, ds *ast.DeleteStmt) (base
 	var authErr error
 	sessionVars := b.ctx.GetSessionVars()
 
-	del := Delete{
+	del := physicalop.Delete{
 		IsMultiTable: ds.IsMultiTable,
 		IgnoreErr:    ds.IgnoreErr,
 	}.Init(b.ctx)
@@ -6155,14 +6204,14 @@ func (b *PlanBuilder) buildDelete(ctx context.Context, ds *ast.DeleteStmt) (base
 			tnW := localResolveCtx.GetTableName(tn)
 			tblID2TableName[tnW.TableInfo.ID] = append(tblID2TableName[tnW.TableInfo.ID], tnW)
 		}
-		tblID2Handle = del.cleanTblID2HandleMap(tblID2TableName, tblID2Handle, preProjNames)
+		tblID2Handle = del.CleanTblID2HandleMap(tblID2TableName, tblID2Handle, preProjNames)
 	}
 	tblID2table := make(map[int64]table.Table, len(tblID2Handle))
 	for id := range tblID2Handle {
 		tblID2table[id], _ = b.is.TableByID(ctx, id)
 	}
 
-	err = del.buildOnDeleteFKTriggers(b.ctx, b.is, tblID2table)
+	err = del.BuildOnDeleteFKTriggers(b.ctx, b.is, tblID2table)
 	if err != nil {
 		return nil, err
 	}
@@ -6215,44 +6264,6 @@ func resolveIndicesForTblID2Handle(tblID2Handle map[int64][]util.HandleCols, sch
 	return newMap, nil
 }
 
-func (p *Delete) cleanTblID2HandleMap(
-	tablesToDelete map[int64][]*resolve.TableNameW,
-	tblID2Handle map[int64][]util.HandleCols,
-	outputNames []*types.FieldName,
-) map[int64][]util.HandleCols {
-	for id, cols := range tblID2Handle {
-		names, ok := tablesToDelete[id]
-		if !ok {
-			delete(tblID2Handle, id)
-			continue
-		}
-		cols = slices.DeleteFunc(cols, func(hCols util.HandleCols) bool {
-			for col := range hCols.IterColumns() {
-				if p.matchingDeletingTable(names, outputNames[col.Index]) {
-					return false
-				}
-			}
-			return true
-		})
-		if len(cols) == 0 {
-			delete(tblID2Handle, id)
-			continue
-		}
-		tblID2Handle[id] = cols
-	}
-	return tblID2Handle
-}
-
-// matchingDeletingTable checks whether this column is from the table which is in the deleting list.
-func (*Delete) matchingDeletingTable(names []*resolve.TableNameW, name *types.FieldName) bool {
-	for _, n := range names {
-		if (name.DBName.L == "" || name.DBName.L == n.DBInfo.Name.L) && name.TblName.L == n.Name.L {
-			return true
-		}
-	}
-	return false
-}
-
 func getWindowName(name string) string {
 	if name == "" {
 		return "<unnamed window>"
@@ -6302,9 +6313,20 @@ func (b *PlanBuilder) buildProjectionForWindow(ctx context.Context, p base.Logic
 			return nil, nil, nil, nil, err
 		}
 		p = np
-		switch newArg.(type) {
-		case *expression.Column, *expression.Constant:
+		switch v := newArg.(type) {
+		case *expression.Constant:
 			newArgList = append(newArgList, newArg.Clone())
+			continue
+		case *expression.Column:
+			// Expression rewrite may have introduced a new plan node, e.g. an Apply for a scalar
+			// subquery. Keep the new output column in the projection so window args can still
+			// resolve against the child schema after pruning.
+			if !proj.Schema().Contains(v) {
+				proj.Exprs = append(proj.Exprs, v)
+				proj.SetOutputNames(append(proj.OutputNames(), types.EmptyName))
+				proj.Schema().Append(v)
+			}
+			newArgList = append(newArgList, v.Clone())
 			continue
 		}
 		proj.Exprs = append(proj.Exprs, newArg)

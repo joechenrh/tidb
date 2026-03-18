@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/pingcap/tidb/pkg/testkit"
+	"github.com/pingcap/tidb/pkg/testkit/testdata"
 )
 
 func TestCorrelatedSubquery(t *testing.T) {
@@ -69,4 +70,47 @@ WHERE NOT (tlc07c2a51.col_1>=
               group by tlc07c2a51.col_6
               HAVING tlc07c2a51.col_6>0)) ;`).Check(testkit.Rows("1", "1", "1", "1", "1", "1", "1", "1", "1", "1"))
 	})
+}
+
+func TestNaturalJoinWithCorrelatedSubquery(tt *testing.T) {
+	testkit.RunTestUnderCascades(tt, func(t *testing.T, tk *testkit.TestKit, cascades, caller string) {
+		tk.MustExec("use test")
+		tk.MustExec("drop table if exists t")
+		tk.MustExec("create table t (a int)")
+		// Keep duplicate and NULL rows so the regression also pins multiplicity
+		// and NULL-handling for the correlated EXISTS predicate.
+		tk.MustExec("insert into t values (1), (1), (2), (null)")
+
+		var input []string
+		var output []struct {
+			SQL    string
+			Plan   []string
+			Result []string
+		}
+		suite := GetCorrelatedSubquerySuiteData()
+		suite.LoadTestCases(t, &input, &output, cascades, caller)
+		for i, sql := range input {
+			testdata.OnRecord(func() {
+				output[i].SQL = sql
+				output[i].Plan = testdata.ConvertRowsToStrings(tk.MustQuery("explain format='brief' " + sql).Rows())
+				output[i].Result = testdata.ConvertRowsToStrings(tk.MustQuery(sql).Rows())
+			})
+			tk.MustQuery("explain format='brief' " + sql).Check(testkit.Rows(output[i].Plan...))
+			tk.MustQuery(sql).Check(testkit.Rows(output[i].Result...))
+		}
+	})
+}
+
+func TestWrongDecorrelate(t *testing.T) {
+	store := testkit.CreateMockStore(t)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("create table t1 (amount decimal(65,20),segment1 varchar(50));")
+	tk.MustExec("INSERT INTO t1 (amount, segment1) VALUES (6.23000000000000000000, '60021022342');")
+	tk.MustExec("INSERT INTO t1 (amount, segment1) VALUES (30025.20000000000000000000, '60121022342');")
+	tk.MustExec("INSERT INTO t1 (amount, segment1) VALUES (0.00000000000000000000, '60021022342');")
+	tk.MustQuery("SELECT (SELECT IF(substr(dd.segment1,1,3)='600','X','') FROM dual WHERE dd.amount<>0) c1,dd.amount,dd.segment1 FROM t1 dd order by 1, 2, 3;").Check(testkit.Rows(
+		"<nil> 0.00000000000000000000 60021022342",
+		" 30025.20000000000000000000 60121022342",
+		"X 6.23000000000000000000 60021022342"))
 }

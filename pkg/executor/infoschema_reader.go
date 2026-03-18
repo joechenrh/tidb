@@ -125,7 +125,11 @@ func (e *memtableRetriever) retrieve(ctx context.Context, sctx sessionctx.Contex
 		// Why not just activate the txn here (sctx.Txn(true)) and do it in Open() instead?
 		// Because it could DATA RACE here and in Open() it's safe.
 		if sctx.GetSessionVars().InTxn() {
-			e.is, err = domain.GetDomain(sctx).GetSnapshotInfoSchema(sctx.GetSessionVars().TxnCtx.StartTS)
+			ts := sctx.GetSessionVars().TxnCtx.StartTS
+			if sctx.GetSessionVars().SnapshotTS != 0 {
+				ts = sctx.GetSessionVars().SnapshotTS
+			}
+			e.is, err = domain.GetDomain(sctx).GetSnapshotInfoSchema(ts)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
@@ -703,6 +707,11 @@ func (e *memtableRetriever) setDataFromOneTable(
 			policyName = table.PlacementPolicyRef.Name.O
 		}
 
+		var affinity any
+		if info := table.Affinity; info != nil {
+			affinity = info.Level
+		}
+
 		rowCount, avgRowLength, dataLength, indexLength := cache.TableRowStatsCache.EstimateDataLength(table)
 
 		record := types.MakeDatums(
@@ -732,6 +741,7 @@ func (e *memtableRetriever) setDataFromOneTable(
 			pkType,                // TIDB_PK_TYPE
 			policyName,            // TIDB_PLACEMENT_POLICY_NAME
 			table.Mode.String(),   // TIDB_TABLE_MODE
+			affinity,              // TIDB_AFFINITY
 		)
 		rows = append(rows, record)
 		e.recordMemoryConsume(record)
@@ -763,6 +773,7 @@ func (e *memtableRetriever) setDataFromOneTable(
 			pkType,                // TIDB_PK_TYPE
 			nil,                   // TIDB_PLACEMENT_POLICY_NAME
 			nil,                   // TIDB_TABLE_MODE
+			nil,                   // TIDB_AFFINITY
 		)
 		rows = append(rows, record)
 		e.recordMemoryConsume(record)
@@ -868,6 +879,7 @@ func (e *memtableRetriever) setDataFromTables(ctx context.Context, sctx sessionc
 					nil,                   // TIDB_PK_TYPE
 					nil,                   // TIDB_PLACEMENT_POLICY_NAME
 					nil,                   // TIDB_TABLE_MODE
+					nil,                   // TIDB_AFFINITY
 				)
 				rows = append(rows, record)
 				e.recordMemoryConsume(record)
@@ -1147,6 +1159,11 @@ func (e *hugeMemTableRetriever) dataForColumnsInTable(
 
 	cols, ordinalPos := e.extractor.ListColumns(tbl)
 	for i, col := range cols {
+		// Skip non-public columns
+		if col.State != model.StatePublic {
+			continue
+		}
+
 		ft := &(col.FieldType)
 		if tbl.IsView() {
 			e.viewMu.RLock()
@@ -1298,6 +1315,11 @@ func (e *memtableRetriever) setDataFromPartitions(ctx context.Context, sctx sess
 			return errors.Trace(ctx.Err())
 		}
 
+		var affinity any
+		if info := table.Affinity; info != nil {
+			affinity = info.Level
+		}
+
 		var rowCount, dataLength, indexLength uint64
 		if table.GetPartitionInfo() == nil {
 			rowCount = cache.TableRowStatsCache.GetTableRows(table.ID)
@@ -1338,6 +1360,7 @@ func (e *memtableRetriever) setDataFromPartitions(ctx context.Context, sctx sess
 				nil,                   // TABLESPACE_NAME
 				nil,                   // TIDB_PARTITION_ID
 				nil,                   // TIDB_PLACEMENT_POLICY_NAME
+				affinity,              // TIDB_AFFINITY
 			)
 			rows = append(rows, record)
 			e.recordMemoryConsume(record)
@@ -1432,6 +1455,7 @@ func (e *memtableRetriever) setDataFromPartitions(ctx context.Context, sctx sess
 					nil,                   // TABLESPACE_NAME
 					pi.ID,                 // TIDB_PARTITION_ID
 					policyName,            // TIDB_PLACEMENT_POLICY_NAME
+					affinity,              // TIDB_AFFINITY
 				)
 				rows = append(rows, record)
 				e.recordMemoryConsume(record)
@@ -1500,6 +1524,7 @@ func (e *memtableRetriever) setDataFromIndex(
 			"YES",        // IS_VISIBLE
 			"YES",        // CLUSTERED
 			0,            // IS_GLOBAL
+			nil,          // PREDICATE
 		)
 		rows = append(rows, record)
 		e.recordMemoryConsume(record)
@@ -1533,6 +1558,12 @@ func (e *memtableRetriever) setDataFromIndex(
 			if idxInfo.Invisible {
 				visible = "NO"
 			}
+
+			var predicate any
+			if idxInfo.ConditionExprString != "" {
+				predicate = idxInfo.ConditionExprString
+			}
+
 			record := types.MakeDatums(
 				schema.O,        // TABLE_SCHEMA
 				tb.Name.O,       // TABLE_NAME
@@ -1547,6 +1578,7 @@ func (e *memtableRetriever) setDataFromIndex(
 				visible,         // IS_VISIBLE
 				isClustered,     // CLUSTERED
 				idxInfo.Global,  // IS_GLOBAL
+				predicate,       // PREDICATE
 			)
 			rows = append(rows, record)
 			e.recordMemoryConsume(record)
@@ -2140,23 +2172,8 @@ func (*memtableRetriever) getRegionsInfoForSingleTable(ctx context.Context, help
 		return nil, err
 	}
 	sk, ek := tablecodec.GetTableHandleKeyRange(tableID)
-	sRegion, err := pdCli.GetRegionByKey(ctx, codec.EncodeBytes(nil, sk))
-	if err != nil {
-		return nil, err
-	}
-	eRegion, err := pdCli.GetRegionByKey(ctx, codec.EncodeBytes(nil, ek))
-	if err != nil {
-		return nil, err
-	}
-	sk, err = hex.DecodeString(sRegion.StartKey)
-	if err != nil {
-		return nil, err
-	}
-	ek, err = hex.DecodeString(eRegion.EndKey)
-	if err != nil {
-		return nil, err
-	}
-	return pdCli.GetRegionsByKeyRange(ctx, pd.NewKeyRange(sk, ek), -1)
+	start, end := helper.Store.GetCodec().EncodeRegionRange(sk, ek)
+	return pdCli.GetRegionsByKeyRange(ctx, pd.NewKeyRange(start, end), -1)
 }
 
 func (e *memtableRetriever) setNewTiKVRegionStatusCol(region *pd.RegionInfo, table *helper.TableInfo) {
@@ -2793,7 +2810,7 @@ func (e *memtableRetriever) dataForTableTiFlashReplica(_ context.Context, sctx s
 				for _, p := range pi.Definitions {
 					progressOfPartition, err := infosync.MustGetTiFlashProgress(p.ID, tbl.TiFlashReplica.Count, &tiFlashStores)
 					if err != nil {
-						logutil.BgLogger().Error("dataForTableTiFlashReplica error", zap.Int64("tableID", tbl.ID), zap.Int64("partitionID", p.ID), zap.Error(err))
+						logutil.BgLogger().Warn("dataForTableTiFlashReplica error", zap.Int64("tableID", tbl.ID), zap.Int64("partitionID", p.ID), zap.Error(err))
 					}
 					progress += progressOfPartition
 				}
@@ -2802,7 +2819,7 @@ func (e *memtableRetriever) dataForTableTiFlashReplica(_ context.Context, sctx s
 				var err error
 				progress, err = infosync.MustGetTiFlashProgress(tbl.ID, tbl.TiFlashReplica.Count, &tiFlashStores)
 				if err != nil {
-					logutil.BgLogger().Error("dataForTableTiFlashReplica error", zap.Int64("tableID", tbl.ID), zap.Error(err))
+					logutil.BgLogger().Warn("dataForTableTiFlashReplica error", zap.Int64("tableID", tbl.ID), zap.Error(err))
 				}
 			}
 			progressString := types.TruncateFloatToString(progress, 2)
@@ -3538,6 +3555,7 @@ func (e *TiFlashSystemTableRetriever) dataForTiFlashSystemTables(ctx context.Con
 	targetTable := tiflashTargetTableName[e.table.Name.L]
 
 	var filters []string
+	// Add filter for keyspace_id if tidb is running in the keyspace mode.
 	if keyspace.GetKeyspaceNameBySettings() != "" {
 		keyspaceID := uint32(sctx.GetStore().GetCodec().GetKeyspaceID())
 		filters = append(filters, fmt.Sprintf("keyspace_id=%d", keyspaceID))

@@ -14,12 +14,14 @@
 package ast
 
 import (
+	"reflect"
 	"strings"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser/auth"
 	"github.com/pingcap/tidb/pkg/parser/format"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
+	"github.com/pingcap/tidb/pkg/parser/util"
 )
 
 var (
@@ -630,6 +632,45 @@ type SelectLockInfo struct {
 	LockType SelectLockType
 	WaitSec  uint64
 	Tables   []*TableName
+}
+
+// Hash64 implements the cascades/base.Hasher.<0th> interface.
+func (n *SelectLockInfo) Hash64(h util.IHasher) {
+	h.HashInt(int(n.LockType))
+	h.HashUint64(n.WaitSec)
+	h.HashInt(len(n.Tables))
+	for _, one := range n.Tables {
+		// to make it simple, we just use lockInfo's addr.
+		h.HashUint64(uint64(reflect.ValueOf(one).Pointer()))
+	}
+}
+
+// Equals implements the cascades/base.Hasher.<1th> interface.
+func (n *SelectLockInfo) Equals(other any) bool {
+	n2, ok := other.(*SelectLockInfo)
+	if !ok {
+		return false
+	}
+	if n == nil {
+		return n2 == nil
+	}
+	if other == nil {
+		return false
+	}
+	ok = n.LockType == n2.LockType &&
+		n.WaitSec == n2.WaitSec
+	if !ok {
+		return false
+	}
+	if len(n.Tables) != len(n2.Tables) {
+		return false
+	}
+	for i, one := range n.Tables {
+		if one != n2.Tables[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // String implements fmt.Stringer.
@@ -3019,6 +3060,7 @@ const (
 	ShowCreateSequence
 	ShowCreatePlacementPolicy
 	ShowGrants
+	ShowMaskingPolicies
 	ShowTriggers
 	ShowProcedureStatus
 	ShowFunctionStatus
@@ -3067,6 +3109,7 @@ const (
 	ShowReplicaStatus
 	ShowDistributions
 	ShowDistributionJobs
+	ShowAffinity
 	// showTpCount is the count of all kinds of `SHOW` statements.
 	showTpCount
 )
@@ -3200,6 +3243,17 @@ func (n *ShowStmt) Restore(ctx *format.RestoreCtx) error {
 		ctx.WriteKeyWord("CREATE USER ")
 		if err := n.User.Restore(ctx); err != nil {
 			return errors.Annotate(err, "An error occurred while restore ShowStmt.User")
+		}
+	case ShowMaskingPolicies:
+		ctx.WriteKeyWord("MASKING POLICIES FOR ")
+		if err := n.Table.Restore(ctx); err != nil {
+			return errors.Annotate(err, "An error occurred while restore ShowStmt.Table")
+		}
+		if n.Where != nil {
+			ctx.WriteKeyWord(" WHERE ")
+			if err := n.Where.Restore(ctx); err != nil {
+				return errors.Annotate(err, "An error occurred while restore ShowStmt.Where")
+			}
 		}
 	case ShowGrants:
 		ctx.WriteKeyWord("GRANTS")
@@ -3949,6 +4003,15 @@ type SplitRegionStmt struct {
 	SplitOpt *SplitOption
 }
 
+type SplitIndexOption struct {
+	stmtNode
+
+	TableLevel bool
+	PrimaryKey bool
+	IndexName  CIStr
+	SplitOpt   *SplitOption
+}
+
 type SplitOption struct {
 	stmtNode
 
@@ -4103,6 +4166,38 @@ func (n *SplitOption) Accept(v Visitor) (Node, bool) {
 		}
 	}
 	return v.Leave(n)
+}
+
+func (n *SplitIndexOption) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	n = newNode.(*SplitIndexOption)
+
+	node, ok := n.SplitOpt.Accept(v)
+	if !ok {
+		return n, false
+	}
+	n.SplitOpt = node.(*SplitOption)
+
+	return v.Leave(n)
+}
+
+func (n *SplitIndexOption) Restore(ctx *format.RestoreCtx) error {
+	ctx.WriteKeyWord("SPLIT ")
+
+	// Table split, empty prefix
+	if n.TableLevel {
+	} else if n.PrimaryKey {
+		ctx.WriteKeyWord("PRIMARY KEY ")
+	} else {
+		ctx.WriteKeyWord("INDEX ")
+		ctx.WriteName(n.IndexName.String())
+		ctx.WritePlain(" ")
+	}
+
+	return n.SplitOpt.Restore(ctx)
 }
 
 type FulltextSearchModifier int

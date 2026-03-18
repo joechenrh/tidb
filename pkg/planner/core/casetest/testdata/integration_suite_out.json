@@ -1,49 +1,22 @@
 [
   {
-    "Name": "TestIssue31240",
-    "Cases": [
-      {
-        "SQL": "explain format = 'brief' select count(*) from t31240;",
-        "Plan": [
-          "StreamAgg 1.00 root  funcs:count(Column#6)->Column#4",
-          "└─TableReader 1.00 root  data:StreamAgg",
-          "  └─StreamAgg 1.00 batchCop[tiflash]  funcs:count(test.t31240._tidb_rowid)->Column#6",
-          "    └─TableFullScan 10000.00 batchCop[tiflash] table:t31240 keep order:false, stats:pseudo"
-        ]
-      },
-      {
-        "SQL": "set @@tidb_isolation_read_engines=\"tiflash,tidb\";",
-        "Plan": null
-      },
-      {
-        "SQL": "explain format = 'brief' select count(*) from t31240;",
-        "Plan": [
-          "StreamAgg 1.00 root  funcs:count(Column#6)->Column#4",
-          "└─TableReader 1.00 root  data:StreamAgg",
-          "  └─StreamAgg 1.00 batchCop[tiflash]  funcs:count(test.t31240._tidb_rowid)->Column#6",
-          "    └─TableFullScan 10000.00 batchCop[tiflash] table:t31240 keep order:false, stats:pseudo"
-        ]
-      }
-    ]
-  },
-  {
     "Name": "TestVerboseExplain",
     "Cases": [
       {
         "SQL": "explain format = 'verbose' select count(*) from t3",
         "Plan": [
-          "StreamAgg_22 1.00 102.69 root  funcs:count(Column#9)->Column#4",
+          "StreamAgg_22 1.00 102.69 root  funcs:count(Column#10)->Column#5",
           "└─IndexReader_23 1.00 52.79 root  index:StreamAgg_10",
-          "  └─StreamAgg_10 1.00 760.20 cop[tikv]  funcs:count(1)->Column#9",
+          "  └─StreamAgg_10 1.00 760.20 cop[tikv]  funcs:count(1)->Column#10",
           "    └─IndexFullScan_21 3.00 610.50 cop[tikv] table:t3, index:c(b) keep order:false"
         ]
       },
       {
         "SQL": "explain format = 'verbose' select count(*) from t2",
         "Plan": [
-          "StreamAgg_27 1.00 107.45 root  funcs:count(Column#7)->Column#4",
+          "StreamAgg_27 1.00 107.45 root  funcs:count(Column#8)->Column#5",
           "└─TableReader_28 1.00 57.55 root  data:StreamAgg_10",
-          "  └─StreamAgg_10 1.00 831.62 cop[tikv]  funcs:count(1)->Column#7",
+          "  └─StreamAgg_10 1.00 831.62 cop[tikv]  funcs:count(1)->Column#8",
           "    └─TableFullScan_25 3.00 681.92 cop[tikv] table:t2 keep order:false"
         ]
       },
@@ -84,7 +57,7 @@
       {
         "SQL": "explain format = 'verbose' select count(*) from t2 group by a",
         "Plan": [
-          "HashAgg_8 3.00 1706.09 root  group by:test.t2.a, funcs:count(1)->Column#4",
+          "HashAgg_8 3.00 1706.09 root  group by:test.t2.a, funcs:count(1)->Column#5",
           "└─TableReader_17 3.00 58.13 root  data:TableFullScan_16",
           "  └─TableFullScan_16 3.00 681.92 cop[tikv] table:t2 keep order:false"
         ]
@@ -92,7 +65,7 @@
       {
         "SQL": "explain format = 'verbose' select count(*) from t3 where b = 0",
         "Plan": [
-          "StreamAgg_12 1.00 64.98 root  funcs:count(1)->Column#4",
+          "StreamAgg_12 1.00 64.98 root  funcs:count(1)->Column#5",
           "└─IndexReader_17 1.00 15.08 root  index:IndexRangeScan_16",
           "  └─IndexRangeScan_16 1.00 162.80 cop[tikv] table:t3, index:c(b) range:[0,0], keep order:false"
         ]
@@ -100,7 +73,7 @@
       {
         "SQL": "explain format = 'verbose' select /*+ use_index(t3, c) */ count(a) from t3 where b = 0",
         "Plan": [
-          "StreamAgg_12 1.00 2001.63 root  funcs:count(test.t3.a)->Column#4",
+          "StreamAgg_12 1.00 2001.63 root  funcs:count(test.t3.a)->Column#5",
           "└─IndexLookUp_19 1.00 1951.73 root  ",
           "  ├─IndexRangeScan_17(Build) 1.00 203.50 cop[tikv] table:t3, index:c(b) range:[0,0], keep order:false",
           "  └─TableRowIDScan_18(Probe) 1.00 227.31 cop[tikv] table:t3 keep order:false"
@@ -109,7 +82,7 @@
       {
         "SQL": "explain format = 'verbose' select count(*) from t2 where a = 0",
         "Plan": [
-          "StreamAgg_12 1.00 109.57 root  funcs:count(1)->Column#4",
+          "StreamAgg_12 1.00 109.57 root  funcs:count(1)->Column#5",
           "└─TableReader_20 1.00 59.67 root  data:Selection_19",
           "  └─Selection_19 1.00 831.62 cop[tikv]  eq(test.t2.a, 0)",
           "    └─TableFullScan_18 3.00 681.92 cop[tikv] table:t2 keep order:false"
@@ -118,7 +91,7 @@
       {
         "SQL": "explain format = 'verbose' select count(*) from t3 t join t3 on t.a = t3.b",
         "Plan": [
-          "StreamAgg_15 1.00 2128.93 root  funcs:count(1)->Column#7",
+          "StreamAgg_15 1.00 2128.93 root  funcs:count(1)->Column#9",
           "└─HashJoin_53 3.00 1979.23 root  inner join, equal:[eq(test.t3.a, test.t3.b)]",
           "  ├─IndexReader_38(Build) 3.00 45.23 root  index:IndexFullScan_37",
           "  │ └─IndexFullScan_37 3.00 488.40 cop[tikv] table:t3, index:c(b) keep order:false",
@@ -130,7 +103,7 @@
       {
         "SQL": "explain format = 'verbose' select /*+ read_from_storage(tiflash[t1, t2]) */ count(*) from t1 join t2 on t1.a = t2.a",
         "Plan": [
-          "StreamAgg_15 1.00 62049.70 root  funcs:count(1)->Column#7",
+          "StreamAgg_15 1.00 62049.70 root  funcs:count(1)->Column#9",
           "└─TableReader_70 3.00 61900.00 root  MppVersion: 3, data:ExchangeSender_69",
           "  └─ExchangeSender_69 3.00 928447.21 mpp[tiflash]  ExchangeType: PassThrough",
           "    └─Projection_68 3.00 928447.21 mpp[tiflash]  test.t1.a",
@@ -146,28 +119,28 @@
       {
         "SQL": "explain format = 'verbose' select /*+ read_from_storage(tiflash[t1, t2]) */ count(*) from t1 join t2 on t1.a = t2.a join t3 on t1.b = t3.b",
         "Plan": [
-          "StreamAgg_20 1.00 71701.80 root  funcs:count(1)->Column#10",
-          "└─HashJoin_92 3.00 71552.10 root  inner join, equal:[eq(test.t1.b, test.t3.b)]",
-          "  ├─TableReader_63(Build) 3.00 69645.79 root  MppVersion: 3, data:ExchangeSender_62",
-          "  │ └─ExchangeSender_62 3.00 1044634.01 mpp[tiflash]  ExchangeType: PassThrough",
-          "  │   └─Projection_61 3.00 1044634.01 mpp[tiflash]  test.t1.b",
-          "  │     └─HashJoin_46 3.00 1044634.00 mpp[tiflash]  inner join, equal:[eq(test.t1.a, test.t2.a)]",
-          "  │       ├─ExchangeReceiver_40(Build) 3.00 580476.40 mpp[tiflash]  ",
-          "  │       │ └─ExchangeSender_39 3.00 580188.40 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "  │       │   └─Selection_38 3.00 580188.40 mpp[tiflash]  not(isnull(test.t1.a)), not(isnull(test.t1.b))",
-          "  │       │     └─TableFullScan_37 3.00 580174.00 mpp[tiflash] table:t1 keep order:false",
-          "  │       └─Selection_42(Probe) 3.00 464146.40 mpp[tiflash]  not(isnull(test.t2.a))",
-          "  │         └─TableFullScan_41 3.00 464139.20 mpp[tiflash] table:t2 keep order:false",
-          "  └─IndexReader_76(Probe) 3.00 45.23 root  index:IndexFullScan_75",
-          "    └─IndexFullScan_75 3.00 488.40 cop[tikv] table:t3, index:c(b) keep order:false"
+          "StreamAgg_21 1.00 71701.80 root  funcs:count(1)->Column#13",
+          "└─HashJoin_101 3.00 71552.10 root  inner join, equal:[eq(test.t1.b, test.t3.b)]",
+          "  ├─TableReader_64(Build) 3.00 69645.79 root  MppVersion: 3, data:ExchangeSender_63",
+          "  │ └─ExchangeSender_63 3.00 1044634.01 mpp[tiflash]  ExchangeType: PassThrough",
+          "  │   └─Projection_62 3.00 1044634.01 mpp[tiflash]  test.t1.b",
+          "  │     └─HashJoin_47 3.00 1044634.00 mpp[tiflash]  inner join, equal:[eq(test.t1.a, test.t2.a)]",
+          "  │       ├─ExchangeReceiver_41(Build) 3.00 580476.40 mpp[tiflash]  ",
+          "  │       │ └─ExchangeSender_40 3.00 580188.40 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "  │       │   └─Selection_39 3.00 580188.40 mpp[tiflash]  not(isnull(test.t1.a)), not(isnull(test.t1.b))",
+          "  │       │     └─TableFullScan_38 3.00 580174.00 mpp[tiflash] table:t1 keep order:false",
+          "  │       └─Selection_43(Probe) 3.00 464146.40 mpp[tiflash]  not(isnull(test.t2.a))",
+          "  │         └─TableFullScan_42 3.00 464139.20 mpp[tiflash] table:t2 keep order:false",
+          "  └─IndexReader_85(Probe) 3.00 45.23 root  index:IndexFullScan_84",
+          "    └─IndexFullScan_84 3.00 488.40 cop[tikv] table:t3, index:c(b) keep order:false"
         ]
       },
       {
         "SQL": "explain format = 'verbose' select (2) in (select /*+ read_from_storage(tiflash[t1]) */ count(*) from t1) from (select t.b < (select /*+ read_from_storage(tiflash[t2]) */ t.b from t2 limit 1 )  from t3 t) t; -- we do generate the agg pushed-down plan of mpp, but cost-cmp failed",
         "Plan": [
           "HashJoin_25 3.00 32781.07 root  CARTESIAN left outer semi join, left side:IndexReader_29",
-          "├─Selection_42(Build) 0.80 31149.25 root  eq(2, Column#18)",
-          "│ └─StreamAgg_49 1.00 31099.35 root  funcs:count(1)->Column#18",
+          "├─Selection_42(Build) 0.80 31149.25 root  eq(2, Column#23)",
+          "│ └─StreamAgg_49 1.00 31099.35 root  funcs:count(1)->Column#23",
           "│   └─TableReader_61 3.00 30949.65 root  MppVersion: 3, data:ExchangeSender_60",
           "│     └─ExchangeSender_60 3.00 464139.20 mpp[tiflash]  ExchangeType: PassThrough",
           "│       └─TableFullScan_59 3.00 464139.20 mpp[tiflash] table:t1 keep order:false",
@@ -178,7 +151,7 @@
       {
         "SQL": "explain format = 'verbose' select /*+ merge_join(t1), read_from_storage(tiflash[t1, t2]) */ count(*) from t1 join t2 on t1.a = t2.a",
         "Plan": [
-          "StreamAgg_15 1.00 62546.70 root  funcs:count(1)->Column#7",
+          "StreamAgg_15 1.00 62546.70 root  funcs:count(1)->Column#9",
           "└─MergeJoin_29 3.00 62397.00 root  inner join, left key:test.t1.a, right key:test.t2.a",
           "  ├─Sort_27(Build) 3.00 31197.00 root  test.t2.a",
           "  │ └─TableReader_26 3.00 30950.13 root  MppVersion: 3, data:ExchangeSender_25",
@@ -191,6 +164,47 @@
           "        └─Selection_19 3.00 464146.40 mpp[tiflash]  not(isnull(test.t1.a))",
           "          └─TableFullScan_18 3.00 464139.20 mpp[tiflash] table:t1 keep order:false"
         ]
+      },
+      {
+        "SQL": "set @@session.tidb_allow_tiflash_cop=ON",
+        "Plan": null
+      },
+      {
+        "SQL": "explain format = 'plan_tree' /*+ set_var(tidb_allow_mpp=0) */ select count(*) from t31240;",
+        "Plan": [
+          "StreamAgg root  funcs:count(Column)->Column",
+          "└─TableReader root  data:StreamAgg",
+          "  └─StreamAgg batchCop[tiflash]  funcs:count(test.t31240._tidb_rowid)->Column",
+          "    └─TableFullScan batchCop[tiflash] table:t31240 keep order:false, stats:pseudo"
+        ]
+      },
+      {
+        "SQL": "explain format = 'plan_tree' /*+ set_var(tidb_isolation_read_engines='tiflash,tidb'), set_var(tidb_allow_mpp=0) */ select count(*) from t31240;",
+        "Plan": [
+          "StreamAgg root  funcs:count(Column)->Column",
+          "└─TableReader root  data:StreamAgg",
+          "  └─StreamAgg batchCop[tiflash]  funcs:count(test.t31240._tidb_rowid)->Column",
+          "    └─TableFullScan batchCop[tiflash] table:t31240 keep order:false, stats:pseudo"
+        ]
+      },
+      {
+        "SQL": "set @@session.tidb_allow_tiflash_cop=OFF",
+        "Plan": null
+      },
+      {
+        "SQL": "explain format = 'plan_tree' /*+ set_var(tidb_allow_mpp=1), set_var(tidb_enforce_mpp=1) */ select sum(ps_supplycost) from partsupp, supplier where ps_suppkey = s_suppkey;",
+        "Plan": [
+          "HashAgg root  funcs:sum(Column)->Column",
+          "└─TableReader root  MppVersion: 3, data:ExchangeSender",
+          "  └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "    └─HashAgg mpp[tiflash]  funcs:sum(test.partsupp.ps_supplycost)->Column",
+          "      └─Projection mpp[tiflash]  test.partsupp.ps_supplycost",
+          "        └─HashJoin mpp[tiflash]  inner join, equal:[eq(test.supplier.s_suppkey, test.partsupp.ps_suppkey)]",
+          "          ├─ExchangeReceiver(Build) mpp[tiflash]  ",
+          "          │ └─ExchangeSender mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "          │   └─TableFullScan mpp[tiflash] table:supplier keep order:false, stats:pseudo",
+          "          └─TableFullScan(Probe) mpp[tiflash] table:partsupp keep order:false, stats:pseudo"
+        ]
       }
     ]
   },
@@ -198,22 +212,22 @@
     "Name": "TestIsolationReadDoNotFilterSystemDB",
     "Cases": [
       {
-        "SQL": "desc format = 'brief' select * from metrics_schema.tidb_query_duration where time >= '2019-12-23 16:10:13' and time <= '2019-12-23 16:30:13'",
+        "SQL": "explain format = 'plan_tree' select * from metrics_schema.tidb_query_duration where time >= '2019-12-23 16:10:13' and time <= '2019-12-23 16:30:13'",
         "Plan": [
-          "MemTableScan 10000.00 root table:tidb_query_duration PromQL:histogram_quantile(0.9, sum(rate(tidb_server_handle_query_duration_seconds_bucket{}[60s])) by (le,sql_type,instance)), start_time:2019-12-23 16:10:13, end_time:2019-12-23 16:30:13, step:1m0s"
+          "MemTableScan root table:tidb_query_duration PromQL:histogram_quantile(0.9, sum(rate(tidb_server_handle_query_duration_seconds_bucket{}[60s])) by (le,sql_type,instance)), start_time:2019-12-23 16:10:13, end_time:2019-12-23 16:30:13, step:1m0s"
         ]
       },
       {
-        "SQL": "desc format = 'brief' select * from information_schema.tables",
+        "SQL": "explain format = 'plan_tree' select * from information_schema.tables",
         "Plan": [
-          "MemTableScan 10000.00 root table:TABLES "
+          "MemTableScan root table:TABLES "
         ]
       },
       {
-        "SQL": "desc format = 'brief' select * from mysql.stats_meta",
+        "SQL": "explain format = 'plan_tree' select * from mysql.stats_meta",
         "Plan": [
-          "TableReader 10000.00 root  data:TableFullScan",
-          "└─TableFullScan 10000.00 cop[tikv] table:stats_meta keep order:false, stats:pseudo"
+          "TableReader root  data:TableFullScan",
+          "└─TableFullScan cop[tikv] table:stats_meta keep order:false, stats:pseudo"
         ]
       }
     ]
@@ -222,19 +236,19 @@
     "Name": "TestIsolationReadTiFlashNotChoosePointGet",
     "Cases": [
       {
-        "SQL": "explain format = 'brief' select * from t where t.a = 1",
+        "SQL": "explain format = 'plan_tree' select * from t where t.a = 1",
         "Result": [
-          "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─TableRangeScan 1.00 mpp[tiflash] table:t range:[1,1], keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─TableRangeScan mpp[tiflash] table:t range:[1,1], keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select * from t where t.a in (1, 2)",
+        "SQL": "explain format = 'plan_tree' select * from t where t.a in (1, 2)",
         "Result": [
-          "TableReader 2.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─TableRangeScan 2.00 mpp[tiflash] table:t range:[1,1], [2,2], keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─TableRangeScan mpp[tiflash] table:t range:[1,1], [2,2], keep order:false, stats:pseudo"
         ]
       }
     ]
@@ -243,27 +257,27 @@
     "Name": "TestMergeContinuousSelections",
     "Cases": [
       {
-        "SQL": "desc format = 'brief' SELECT table2 . `col_char_64` AS field1 FROM `ts` AS table2 INNER JOIN (SELECT DISTINCT SUBQUERY3_t1 . * FROM `ts` AS SUBQUERY3_t1 LEFT OUTER JOIN `ts` AS SUBQUERY3_t2 ON SUBQUERY3_t2 . `col_varchar_64_not_null` = SUBQUERY3_t1 . `col_varchar_key`) AS table3 ON (table3 . `col_varchar_key` = table2 . `col_varchar_64`) WHERE table3 . `col_char_64_not_null` >= SOME (SELECT SUBQUERY4_t1 . `col_varchar_64` AS SUBQUERY4_field1 FROM `ts` AS SUBQUERY4_t1) GROUP BY field1 ;",
+        "SQL": "explain format = 'plan_tree' SELECT table2 . `col_char_64` AS field1 FROM `ts` AS table2 INNER JOIN (SELECT DISTINCT SUBQUERY3_t1 . * FROM `ts` AS SUBQUERY3_t1 LEFT OUTER JOIN `ts` AS SUBQUERY3_t2 ON SUBQUERY3_t2 . `col_varchar_64_not_null` = SUBQUERY3_t1 . `col_varchar_key`) AS table3 ON (table3 . `col_varchar_key` = table2 . `col_varchar_64`) WHERE table3 . `col_char_64_not_null` >= SOME (SELECT SUBQUERY4_t1 . `col_varchar_64` AS SUBQUERY4_field1 FROM `ts` AS SUBQUERY4_t1) GROUP BY field1 ;",
         "Plan": [
-          "HashAgg 7992.00 root  group by:test.ts.col_char_64, funcs:firstrow(test.ts.col_char_64)->test.ts.col_char_64",
-          "└─HashJoin 9990.00 root  CARTESIAN inner join, other cond:or(ge(test.ts.col_char_64_not_null, Column#25), if(ne(Column#26, 0), NULL, 0))",
-          "  ├─Selection(Build) 0.80 root  ne(Column#27, 0)",
-          "  │ └─HashAgg 1.00 root  funcs:min(Column#36)->Column#25, funcs:sum(Column#37)->Column#26, funcs:count(Column#38)->Column#27",
-          "  │   └─TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
-          "  │     └─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  │       └─HashAgg 1.00 mpp[tiflash]  funcs:min(Column#42)->Column#36, funcs:sum(Column#43)->Column#37, funcs:count(1)->Column#38",
-          "  │         └─Projection 10000.00 mpp[tiflash]  test.ts.col_varchar_64->Column#42, cast(isnull(test.ts.col_varchar_64), decimal(20,0) BINARY)->Column#43",
-          "  │           └─TableFullScan 10000.00 mpp[tiflash] table:SUBQUERY4_t1 keep order:false, stats:pseudo",
-          "  └─TableReader(Probe) 12487.50 root  MppVersion: 3, data:ExchangeSender",
-          "    └─ExchangeSender 12487.50 mpp[tiflash]  ExchangeType: PassThrough",
-          "      └─Projection 12487.50 mpp[tiflash]  test.ts.col_char_64, test.ts.col_char_64_not_null",
-          "        └─HashJoin 12487.50 mpp[tiflash]  inner join, equal:[eq(test.ts.col_varchar_64, test.ts.col_varchar_key)]",
-          "          ├─ExchangeReceiver(Build) 9990.00 mpp[tiflash]  ",
-          "          │ └─ExchangeSender 9990.00 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "          │   └─Selection 9990.00 mpp[tiflash]  not(isnull(test.ts.col_varchar_64))",
-          "          │     └─TableFullScan 10000.00 mpp[tiflash] table:table2 keep order:false, stats:pseudo",
-          "          └─Selection(Probe) 9990.00 mpp[tiflash]  not(isnull(test.ts.col_varchar_key))",
-          "            └─TableFullScan 10000.00 mpp[tiflash] table:SUBQUERY3_t1 keep order:false, stats:pseudo"
+          "HashAgg root  group by:test.ts.col_char_64, funcs:firstrow(test.ts.col_char_64)->test.ts.col_char_64",
+          "└─HashJoin root  CARTESIAN inner join, other cond:or(ge(test.ts.col_char_64_not_null, Column), if(ne(Column, 0), NULL, 0))",
+          "  ├─Selection(Build) root  ne(Column, 0)",
+          "  │ └─HashAgg root  funcs:min(Column)->Column, funcs:sum(Column)->Column, funcs:count(Column)->Column",
+          "  │   └─TableReader root  MppVersion: 3, data:ExchangeSender",
+          "  │     └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  │       └─HashAgg mpp[tiflash]  funcs:min(Column)->Column, funcs:sum(Column)->Column, funcs:count(1)->Column",
+          "  │         └─Projection mpp[tiflash]  test.ts.col_varchar_64->Column, cast(isnull(test.ts.col_varchar_64), decimal(20,0) BINARY)->Column",
+          "  │           └─TableFullScan mpp[tiflash] table:SUBQUERY4_t1 keep order:false, stats:pseudo",
+          "  └─TableReader(Probe) root  MppVersion: 3, data:ExchangeSender",
+          "    └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "      └─Projection mpp[tiflash]  test.ts.col_char_64, test.ts.col_char_64_not_null",
+          "        └─HashJoin mpp[tiflash]  inner join, equal:[eq(test.ts.col_varchar_64, test.ts.col_varchar_key)]",
+          "          ├─ExchangeReceiver(Build) mpp[tiflash]  ",
+          "          │ └─ExchangeSender mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "          │   └─Selection mpp[tiflash]  not(isnull(test.ts.col_varchar_64))",
+          "          │     └─TableFullScan mpp[tiflash] table:table2 keep order:false, stats:pseudo",
+          "          └─Selection(Probe) mpp[tiflash]  not(isnull(test.ts.col_varchar_key))",
+          "            └─TableFullScan mpp[tiflash] table:SUBQUERY3_t1 keep order:false, stats:pseudo"
         ]
       }
     ]
@@ -272,7 +286,7 @@
     "Name": "TestPushDownGroupConcatToTiFlash",
     "Cases": [
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id) from ts",
         "Plan": [
           "HashAgg 1.00 root  funcs:group_concat(Column#6 separator \",\")->Column#5",
           "└─TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
@@ -286,7 +300,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -303,7 +317,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -319,7 +333,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -336,7 +350,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0),count(*),min(col_1) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0),count(*),min(col_1) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -352,7 +366,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0),count(*),max(col_0) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0),count(*),max(col_0) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -369,7 +383,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -385,7 +399,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -402,7 +416,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -418,7 +432,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -435,7 +449,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_1, id order by col_0) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_1, id order by col_0) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -451,7 +465,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_1, id order by col_0) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_1, id order by col_0) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -468,7 +482,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0),count(*),min(col_0),avg(id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0),count(*),min(col_0),avg(id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -484,7 +498,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0),count(*),max(col_1),avg(id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0),count(*),max(col_1),avg(id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -500,7 +514,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0),count(distinct id),min(col_0),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id order by col_0),count(distinct id),min(col_0),avg(id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -516,7 +530,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0),count(distinct id),max(col_1),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id order by col_0),count(distinct id),max(col_1),avg(id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -534,7 +548,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id),count(distinct id),min(col_0),avg(id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id),count(distinct id),min(col_0),avg(id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -550,7 +564,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct id),max(col_1),avg(id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct id),max(col_1),avg(id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -566,7 +580,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id),count(distinct id),min(col_0),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id),count(distinct id),min(col_0),avg(id) from ts",
         "Plan": [
           "HashAgg 1.00 root  funcs:group_concat(Column#9 separator \",\")->Column#5, funcs:count(Column#10)->Column#6, funcs:min(Column#11)->Column#7, funcs:avg(Column#12, Column#13)->Column#8",
           "└─TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
@@ -580,7 +594,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct id),max(col_1),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct id),max(col_1),avg(id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -598,7 +612,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id),count(distinct id),group_concat(col_0 order by 1),avg(id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_1, id),count(distinct id),group_concat(col_0 order by 1),avg(id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -614,7 +628,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0),count(distinct id),group_concat(col_1, id order by 1,2),avg(id) from ts group by col_2",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0),count(distinct id),group_concat(col_1, id order by 1,2),avg(id) from ts group by col_2",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -630,7 +644,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, id),count(distinct id),group_concat(col_1, id order by 1,2),min(col_0),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, id),count(distinct id),group_concat(col_1, id order by 1,2),min(col_0),avg(id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -646,7 +660,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct id),group_concat(col_1, id order by 1,2),max(col_1),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct id),group_concat(col_1, id order by 1,2),max(col_1),avg(id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -662,7 +676,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct col_2),group_concat(col_1, id),max(col_1),avg(id) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct col_2),group_concat(col_1, id),max(col_1),avg(id) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -680,7 +694,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct col_2),group_concat(col_1, id),max(col_1),avg(id) from ts group by col_0",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0, col_1, id),count(distinct col_2),group_concat(col_1, id),max(col_1),avg(id) from ts group by col_0",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -696,7 +710,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,'GG') from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,'GG') from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -715,7 +729,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,'01') from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,'01') from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -732,7 +746,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,1) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,1) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -749,7 +763,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,0) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,0) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -766,7 +780,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,10) from ts group by '010'",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,10) from ts group by '010'",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -783,7 +797,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,0) from ts group by '011'",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,0) from ts group by '011'",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -800,7 +814,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,'GG') from ts group by 'GG'",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 0,'GG') from ts group by 'GG'",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -823,7 +837,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 'GG','GG') from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 'GG','GG') from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -839,7 +853,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 'Gg','GG') from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 'Gg','GG') from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -855,7 +869,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 'GG-10','GG') from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct 'GG-10','GG') from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -871,7 +885,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct '1200-01-01 00:00:00.023',1200) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct '1200-01-01 00:00:00.023',1200) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -890,7 +904,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_0) from ts group by id",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_0) from ts group by id",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -905,7 +919,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_0,id) from ts group by id",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(col_0, col_0,id) from ts group by id",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -921,7 +935,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0 order by id<10) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0 order by id<10) from ts",
         "Plan": [
           "TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -938,7 +952,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0 order by id<10) from ts group by col_1",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0 order by id<10) from ts group by col_1",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -955,7 +969,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0>10 order by id<10) from ts group by col_1",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0>10 order by id<10) from ts group by col_1",
         "Plan": [
           "TableReader 8000.00 root  MppVersion: 3, data:ExchangeSender",
           "└─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: PassThrough",
@@ -973,7 +987,7 @@
         ]
       },
       {
-        "SQL": "desc format = 'brief' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0 order by col_0<=>null) from ts",
+        "SQL": "explain format = 'plan_tree' select /*+ hash_agg(),agg_to_cop() */ group_concat(distinct col_0 order by col_0<=>null) from ts",
         "Plan": [
           "HashAgg 1.00 root  funcs:group_concat(distinct Column#6 order by Column#7 separator \",\")->Column#5",
           "└─Projection 10000.00 root  test.ts.col_0->Column#6, nulleq(test.ts.col_0, <nil>)->Column#7",
@@ -992,66 +1006,44 @@
     ]
   },
   {
-    "Name": "TestIssue32632",
-    "Cases": [
-      {
-        "SQL": "explain format = 'brief' select sum(ps_supplycost) from partsupp, supplier where ps_suppkey = s_suppkey;",
-        "Plan": [
-          "HashAgg 1.00 root  funcs:sum(Column#15)->Column#14",
-          "└─TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
-          "  └─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "    └─HashAgg 1.00 mpp[tiflash]  funcs:sum(test.partsupp.ps_supplycost)->Column#15",
-          "      └─Projection 12500.00 mpp[tiflash]  test.partsupp.ps_supplycost",
-          "        └─HashJoin 12500.00 mpp[tiflash]  inner join, equal:[eq(test.supplier.s_suppkey, test.partsupp.ps_suppkey)]",
-          "          ├─ExchangeReceiver(Build) 10000.00 mpp[tiflash]  ",
-          "          │ └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "          │   └─TableFullScan 10000.00 mpp[tiflash] table:supplier keep order:false, stats:pseudo",
-          "          └─TableFullScan(Probe) 800000.00 mpp[tiflash] table:partsupp keep order:false, stats:pseudo"
-        ]
-      }
-    ]
-  },
-  {
     "Name": "TestTiFlashPartitionTableScan",
     "Cases": [
       {
-        "SQL": "explain format = 'brief' select * from rp_t where a = 1 or a = 20",
+        "SQL": "explain format = 'plan_tree' select * from rp_t where a = 1 or a = 20",
         "Plan": [
-          "TableReader 20.00 root partition:p0,p3 MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 20.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Selection 20.00 mpp[tiflash]  or(eq(test.rp_t.a, 1), eq(test.rp_t.a, 20))",
-          "    └─TableFullScan 10000.00 mpp[tiflash] table:rp_t keep order:false, stats:pseudo, PartitionTableScan:true"
+          "TableReader root partition:p0,p3 MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Selection mpp[tiflash]  or(eq(test.rp_t.a, 1), eq(test.rp_t.a, 20))",
+          "    └─TableFullScan mpp[tiflash] table:rp_t keep order:false, stats:pseudo, PartitionTableScan:true"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select * from hp_t where a = 1 or a = 20",
+        "SQL": "explain format = 'plan_tree' select * from hp_t where a = 1 or a = 20",
         "Plan": [
-          "TableReader 20.00 root partition:p0,p1 MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 20.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Selection 20.00 mpp[tiflash]  or(eq(test.hp_t.a, 1), eq(test.hp_t.a, 20))",
-          "    └─TableFullScan 10000.00 mpp[tiflash] table:hp_t keep order:false, stats:pseudo, PartitionTableScan:true"
+          "TableReader root partition:p0,p1 MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Selection mpp[tiflash]  or(eq(test.hp_t.a, 1), eq(test.hp_t.a, 20))",
+          "    └─TableFullScan mpp[tiflash] table:hp_t keep order:false, stats:pseudo, PartitionTableScan:true"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select count(*) from rp_t where a = 1 or a = 20",
+        "SQL": "explain format = 'plan_tree' select count(*) from rp_t where a = 1 or a = 20",
         "Plan": [
-          "HashAgg 1.00 root  funcs:count(Column#4)->Column#3",
-          "└─TableReader 1.00 root partition:p0,p3 MppVersion: 3, data:ExchangeSender",
-          "  └─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "    └─HashAgg 1.00 mpp[tiflash]  funcs:count(1)->Column#4",
-          "      └─Selection 20.00 mpp[tiflash]  or(eq(test.rp_t.a, 1), eq(test.rp_t.a, 20))",
-          "        └─TableFullScan 10000.00 mpp[tiflash] table:rp_t keep order:false, stats:pseudo, PartitionTableScan:true"
+          "StreamAgg root  funcs:count(1)->Column",
+          "└─TableReader root partition:p0,p3 MppVersion: 3, data:ExchangeSender",
+          "  └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "    └─Selection mpp[tiflash]  or(eq(test.rp_t.a, 1), eq(test.rp_t.a, 20))",
+          "      └─TableFullScan mpp[tiflash] table:rp_t keep order:false, stats:pseudo, PartitionTableScan:true"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select count(*) from hp_t where a = 1 or a = 20",
+        "SQL": "explain format = 'plan_tree' select count(*) from hp_t where a = 1 or a = 20",
         "Plan": [
-          "HashAgg 1.00 root  funcs:count(Column#4)->Column#3",
-          "└─TableReader 1.00 root partition:p0,p1 MppVersion: 3, data:ExchangeSender",
-          "  └─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "    └─HashAgg 1.00 mpp[tiflash]  funcs:count(1)->Column#4",
-          "      └─Selection 20.00 mpp[tiflash]  or(eq(test.hp_t.a, 1), eq(test.hp_t.a, 20))",
-          "        └─TableFullScan 10000.00 mpp[tiflash] table:hp_t keep order:false, stats:pseudo, PartitionTableScan:true"
+          "StreamAgg root  funcs:count(1)->Column",
+          "└─TableReader root partition:p0,p1 MppVersion: 3, data:ExchangeSender",
+          "  └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "    └─Selection mpp[tiflash]  or(eq(test.hp_t.a, 1), eq(test.hp_t.a, 20))",
+          "      └─TableFullScan mpp[tiflash] table:hp_t keep order:false, stats:pseudo, PartitionTableScan:true"
         ]
       }
     ]
@@ -1060,291 +1052,291 @@
     "Name": "TestTiFlashFineGrainedShuffle",
     "Cases": [
       {
-        "SQL": "explain format = 'brief' select row_number() over w1 from t1 window w1 as (partition by c1 order by c1);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1 from t1 window w1 as (partition by c1 order by c1);",
         "Plan": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 10000.00 mpp[tiflash]  Column#5->Column#6, stream_count: 8",
-          "    └─Window 10000.00 mpp[tiflash]  row_number()->Column#5 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 10000.00 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 10000.00 mpp[tiflash]  Column#5->Column#6, stream_count: 8",
-          "    └─Window 10000.00 mpp[tiflash]  row_number()->Column#5 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 10000.00 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1, rank() over w2 from t1 window w1 as (partition by c1 order by c1), w2 as (partition by c2);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1, rank() over w2 from t1 window w1 as (partition by c1 order by c1), w2 as (partition by c2);",
         "Plan": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 10000.00 mpp[tiflash]  Column#7->Column#8, Column#6->Column#9, stream_count: 8",
-          "    └─Window 10000.00 mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 10000.00 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Window 10000.00 mpp[tiflash]  rank()->Column#6 over(partition by test.t1.c2), stream_count: 8",
-          "              └─Sort 10000.00 mpp[tiflash]  test.t1.c2, stream_count: 8",
-          "                └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "                  └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
-          "                    └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#8 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Window mpp[tiflash]  rank()->Column#7 over(partition by test.t1.c2), stream_count: 8",
+          "              └─Sort mpp[tiflash]  test.t1.c2, stream_count: 8",
+          "                └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "                  └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
+          "                    └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 10000.00 mpp[tiflash]  Column#7->Column#8, Column#6->Column#9, stream_count: 8",
-          "    └─Window 10000.00 mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 10000.00 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Window 10000.00 mpp[tiflash]  rank()->Column#6 over(partition by test.t1.c2), stream_count: 8",
-          "              └─Sort 10000.00 mpp[tiflash]  test.t1.c2, stream_count: 8",
-          "                └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "                  └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
-          "                    └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#8 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Window mpp[tiflash]  rank()->Column#7 over(partition by test.t1.c2), stream_count: 8",
+          "              └─Sort mpp[tiflash]  test.t1.c2, stream_count: 8",
+          "                └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "                  └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
+          "                    └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1, rank() over w2 from t1 window w1 as (partition by c1 order by c1), w2 as (partition by c2) order by 1, 2 limit 10;",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1, rank() over w2 from t1 window w1 as (partition by c1 order by c1), w2 as (partition by c2) order by 1, 2 limit 10;",
         "Plan": [
-          "Projection 10.00 root  Column#7->Column#8, Column#6->Column#9",
-          "└─TopN 10.00 root  Column#7, Column#6, offset:0, count:10",
-          "  └─TableReader 10.00 root  MppVersion: 3, data:ExchangeSender",
-          "    └─ExchangeSender 10.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "      └─TopN 10.00 mpp[tiflash]  Column#7, Column#6, offset:0, count:10",
-          "        └─Window 10000.00 mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "          └─Sort 10000.00 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "            └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "              └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "                └─Window 10000.00 mpp[tiflash]  rank()->Column#6 over(partition by test.t1.c2), stream_count: 8",
-          "                  └─Sort 10000.00 mpp[tiflash]  test.t1.c2, stream_count: 8",
-          "                    └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "                      └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
-          "                        └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "Projection root  Column, Column",
+          "└─TopN root  Column, Column, offset:0, count:10",
+          "  └─TableReader root  MppVersion: 3, data:ExchangeSender",
+          "    └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "      └─TopN mpp[tiflash]  Column, Column, offset:0, count:10",
+          "        └─Window mpp[tiflash]  row_number()->Column#8 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "          └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "            └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "              └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "                └─Window mpp[tiflash]  rank()->Column#7 over(partition by test.t1.c2), stream_count: 8",
+          "                  └─Sort mpp[tiflash]  test.t1.c2, stream_count: 8",
+          "                    └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "                      └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
+          "                        └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "Projection 10.00 root  Column#7->Column#8, Column#6->Column#9",
-          "└─TopN 10.00 root  Column#7, Column#6, offset:?, count:?",
-          "  └─TableReader 10.00 root  MppVersion: 3, data:ExchangeSender",
-          "    └─ExchangeSender 10.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "      └─TopN 10.00 mpp[tiflash]  Column#7, Column#6, offset:?, count:?",
-          "        └─Window 10000.00 mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "          └─Sort 10000.00 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "            └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "              └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "                └─Window 10000.00 mpp[tiflash]  rank()->Column#6 over(partition by test.t1.c2), stream_count: 8",
-          "                  └─Sort 10000.00 mpp[tiflash]  test.t1.c2, stream_count: 8",
-          "                    └─ExchangeReceiver 10000.00 mpp[tiflash]  stream_count: 8",
-          "                      └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
-          "                        └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "Projection root  Column, Column",
+          "└─TopN root  Column, Column, offset:?, count:?",
+          "  └─TableReader root  MppVersion: 3, data:ExchangeSender",
+          "    └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "      └─TopN mpp[tiflash]  Column, Column, offset:?, count:?",
+          "        └─Window mpp[tiflash]  row_number()->Column#8 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "          └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "            └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "              └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "                └─Window mpp[tiflash]  rank()->Column#7 over(partition by test.t1.c2), stream_count: 8",
+          "                  └─Sort mpp[tiflash]  test.t1.c2, stream_count: 8",
+          "                    └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "                      └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
+          "                        └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1, count(c2) from t1 group by c1 having c1 > 10 window w1 as (partition by c2 order by c2);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1, count(c2) from t1 group by c1 having c1 > 10 window w1 as (partition by c2 order by c2);",
         "Plan": [
-          "TableReader 2666.67 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 2666.67 mpp[tiflash]  Column#6->Column#7, Column#4->Column#8, stream_count: 8",
-          "    └─Window 2666.67 mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c2 order by test.t1.c2 rows between current row and current row), stream_count: 8",
-          "      └─Sort 2666.67 mpp[tiflash]  test.t1.c2, test.t1.c2, stream_count: 8",
-          "        └─ExchangeReceiver 2666.67 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
-          "            └─Projection 2666.67 mpp[tiflash]  Column#4, test.t1.c2",
-          "              └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column#9)->Column#4, funcs:firstrow(Column#10)->test.t1.c2",
-          "                └─ExchangeReceiver 2666.67 mpp[tiflash]  ",
-          "                  └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
-          "                    └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column#9, funcs:firstrow(test.t1.c2)->Column#10",
-          "                      └─Selection 3333.33 mpp[tiflash]  gt(test.t1.c1, 10)",
-          "                        └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c2 order by test.t1.c2 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c2, test.t1.c2, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
+          "            └─Projection mpp[tiflash]  Column, test.t1.c2",
+          "              └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column)->Column, funcs:firstrow(Column)->test.t1.c2",
+          "                └─ExchangeReceiver mpp[tiflash]  ",
+          "                  └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
+          "                    └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column, funcs:firstrow(test.t1.c2)->Column",
+          "                      └─Selection mpp[tiflash]  gt(test.t1.c1, 10)",
+          "                        └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 2666.67 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 2666.67 mpp[tiflash]  Column#6->Column#7, Column#4->Column#8, stream_count: 8",
-          "    └─Window 2666.67 mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c2 order by test.t1.c2 rows between current row and current row), stream_count: 8",
-          "      └─Sort 2666.67 mpp[tiflash]  test.t1.c2, test.t1.c2, stream_count: 8",
-          "        └─ExchangeReceiver 2666.67 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
-          "            └─Projection 2666.67 mpp[tiflash]  Column#4, test.t1.c2",
-          "              └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column#9)->Column#4, funcs:firstrow(Column#10)->test.t1.c2",
-          "                └─ExchangeReceiver 2666.67 mpp[tiflash]  ",
-          "                  └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
-          "                    └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column#9, funcs:firstrow(test.t1.c2)->Column#10",
-          "                      └─Selection 3333.33 mpp[tiflash]  gt(test.t1.c1, ?)",
-          "                        └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c2 order by test.t1.c2 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c2, test.t1.c2, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary], stream_count: 8",
+          "            └─Projection mpp[tiflash]  Column, test.t1.c2",
+          "              └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column)->Column, funcs:firstrow(Column)->test.t1.c2",
+          "                └─ExchangeReceiver mpp[tiflash]  ",
+          "                  └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
+          "                    └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column, funcs:firstrow(test.t1.c2)->Column",
+          "                      └─Selection mpp[tiflash]  gt(test.t1.c1, ?)",
+          "                        └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1, count(c1) from t1 group by c2 having c2 > 10 window w1 as (partition by c1 order by c2);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1, count(c1) from t1 group by c2 having c2 > 10 window w1 as (partition by c1 order by c2);",
         "Plan": [
-          "TableReader 2666.67 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 2666.67 mpp[tiflash]  Column#6->Column#7, Column#4->Column#8, stream_count: 8",
-          "    └─Window 2666.67 mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row), stream_count: 8",
-          "      └─Sort 2666.67 mpp[tiflash]  test.t1.c1, test.t1.c2, stream_count: 8",
-          "        └─ExchangeReceiver 2666.67 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Projection 2666.67 mpp[tiflash]  Column#4, test.t1.c1, test.t1.c2",
-          "              └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c2, funcs:sum(Column#9)->Column#4, funcs:firstrow(Column#10)->test.t1.c1, funcs:firstrow(test.t1.c2)->test.t1.c2",
-          "                └─ExchangeReceiver 2666.67 mpp[tiflash]  ",
-          "                  └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary]",
-          "                    └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c2, funcs:count(test.t1.c1)->Column#9, funcs:firstrow(test.t1.c1)->Column#10",
-          "                      └─Selection 3333.33 mpp[tiflash]  gt(test.t1.c2, 10)",
-          "                        └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c2, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Projection mpp[tiflash]  Column, test.t1.c1, test.t1.c2",
+          "              └─HashAgg mpp[tiflash]  group by:test.t1.c2, funcs:sum(Column)->Column, funcs:firstrow(Column)->test.t1.c1, funcs:firstrow(test.t1.c2)->test.t1.c2",
+          "                └─ExchangeReceiver mpp[tiflash]  ",
+          "                  └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary]",
+          "                    └─HashAgg mpp[tiflash]  group by:test.t1.c2, funcs:count(test.t1.c1)->Column, funcs:firstrow(test.t1.c1)->Column",
+          "                      └─Selection mpp[tiflash]  gt(test.t1.c2, 10)",
+          "                        └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 2666.67 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 2666.67 mpp[tiflash]  Column#6->Column#7, Column#4->Column#8, stream_count: 8",
-          "    └─Window 2666.67 mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row), stream_count: 8",
-          "      └─Sort 2666.67 mpp[tiflash]  test.t1.c1, test.t1.c2, stream_count: 8",
-          "        └─ExchangeReceiver 2666.67 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Projection 2666.67 mpp[tiflash]  Column#4, test.t1.c1, test.t1.c2",
-          "              └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c2, funcs:sum(Column#9)->Column#4, funcs:firstrow(Column#10)->test.t1.c1, funcs:firstrow(test.t1.c2)->test.t1.c2",
-          "                └─ExchangeReceiver 2666.67 mpp[tiflash]  ",
-          "                  └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary]",
-          "                    └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c2, funcs:count(test.t1.c1)->Column#9, funcs:firstrow(test.t1.c1)->Column#10",
-          "                      └─Selection 3333.33 mpp[tiflash]  gt(test.t1.c2, ?)",
-          "                        └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c2, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Projection mpp[tiflash]  Column, test.t1.c1, test.t1.c2",
+          "              └─HashAgg mpp[tiflash]  group by:test.t1.c2, funcs:sum(Column)->Column, funcs:firstrow(Column)->test.t1.c1, funcs:firstrow(test.t1.c2)->test.t1.c2",
+          "                └─ExchangeReceiver mpp[tiflash]  ",
+          "                  └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c2, collate: binary]",
+          "                    └─HashAgg mpp[tiflash]  group by:test.t1.c2, funcs:count(test.t1.c1)->Column, funcs:firstrow(test.t1.c1)->Column",
+          "                      └─Selection mpp[tiflash]  gt(test.t1.c2, ?)",
+          "                        └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1 from t1 a join t1 b on a.c1 = b.c2 window w1 as (partition by a.c1);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1 from t1 a join t1 b on a.c1 = b.c2 window w1 as (partition by a.c1);",
         "Plan": [
-          "TableReader 12487.50 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 12487.50 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 12487.50 mpp[tiflash]  Column#8->Column#9, stream_count: 8",
-          "    └─Window 12487.50 mpp[tiflash]  row_number()->Column#8 over(partition by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 12487.50 mpp[tiflash]  test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 12487.50 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 12487.50 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Projection 12487.50 mpp[tiflash]  test.t1.c1",
-          "              └─HashJoin 12487.50 mpp[tiflash]  inner join, equal:[eq(test.t1.c1, test.t1.c2)]",
-          "                ├─ExchangeReceiver(Build) 9990.00 mpp[tiflash]  ",
-          "                │ └─ExchangeSender 9990.00 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "                │   └─Selection 9990.00 mpp[tiflash]  not(isnull(test.t1.c1))",
-          "                │     └─TableFullScan 10000.00 mpp[tiflash] table:a keep order:false, stats:pseudo",
-          "                └─Selection(Probe) 9990.00 mpp[tiflash]  not(isnull(test.t1.c2))",
-          "                  └─TableFullScan 10000.00 mpp[tiflash] table:b keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#10 over(partition by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Projection mpp[tiflash]  test.t1.c1",
+          "              └─HashJoin mpp[tiflash]  inner join, equal:[eq(test.t1.c1, test.t1.c2)]",
+          "                ├─ExchangeReceiver(Build) mpp[tiflash]  ",
+          "                │ └─ExchangeSender mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "                │   └─Selection mpp[tiflash]  not(isnull(test.t1.c1))",
+          "                │     └─TableFullScan mpp[tiflash] table:a keep order:false, stats:pseudo",
+          "                └─Selection(Probe) mpp[tiflash]  not(isnull(test.t1.c2))",
+          "                  └─TableFullScan mpp[tiflash] table:b keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 12487.50 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 12487.50 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 12487.50 mpp[tiflash]  Column#8->Column#9, stream_count: 8",
-          "    └─Window 12487.50 mpp[tiflash]  row_number()->Column#8 over(partition by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 12487.50 mpp[tiflash]  test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 12487.50 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 12487.50 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Projection 12487.50 mpp[tiflash]  test.t1.c1",
-          "              └─HashJoin 12487.50 mpp[tiflash]  inner join, equal:[eq(test.t1.c1, test.t1.c2)]",
-          "                ├─ExchangeReceiver(Build) 9990.00 mpp[tiflash]  ",
-          "                │ └─ExchangeSender 9990.00 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "                │   └─Selection 9990.00 mpp[tiflash]  not(isnull(test.t1.c1))",
-          "                │     └─TableFullScan 10000.00 mpp[tiflash] table:a keep order:false, stats:pseudo",
-          "                └─Selection(Probe) 9990.00 mpp[tiflash]  not(isnull(test.t1.c2))",
-          "                  └─TableFullScan 10000.00 mpp[tiflash] table:b keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#10 over(partition by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Projection mpp[tiflash]  test.t1.c1",
+          "              └─HashJoin mpp[tiflash]  inner join, equal:[eq(test.t1.c1, test.t1.c2)]",
+          "                ├─ExchangeReceiver(Build) mpp[tiflash]  ",
+          "                │ └─ExchangeSender mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "                │   └─Selection mpp[tiflash]  not(isnull(test.t1.c1))",
+          "                │     └─TableFullScan mpp[tiflash] table:a keep order:false, stats:pseudo",
+          "                └─Selection(Probe) mpp[tiflash]  not(isnull(test.t1.c2))",
+          "                  └─TableFullScan mpp[tiflash] table:b keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1 from t1 where c1 < 100 window w1 as (partition by c1 order by c1);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1 from t1 where c1 < 100 window w1 as (partition by c1 order by c1);",
         "Plan": [
-          "TableReader 3323.33 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 3323.33 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 3323.33 mpp[tiflash]  Column#5->Column#6, stream_count: 8",
-          "    └─Window 3323.33 mpp[tiflash]  row_number()->Column#5 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 3323.33 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 3323.33 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 3323.33 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Selection 3323.33 mpp[tiflash]  lt(test.t1.c1, 100)",
-          "              └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Selection mpp[tiflash]  lt(test.t1.c1, 100)",
+          "              └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 3323.33 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 3323.33 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 3323.33 mpp[tiflash]  Column#5->Column#6, stream_count: 8",
-          "    └─Window 3323.33 mpp[tiflash]  row_number()->Column#5 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
-          "      └─Sort 3323.33 mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
-          "        └─ExchangeReceiver 3323.33 mpp[tiflash]  stream_count: 8",
-          "          └─ExchangeSender 3323.33 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
-          "            └─Selection 3323.33 mpp[tiflash]  lt(test.t1.c1, ?)",
-          "              └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, stream_count: 8",
+          "    └─Window mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c1 rows between current row and current row), stream_count: 8",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c1, stream_count: 8",
+          "        └─ExchangeReceiver mpp[tiflash]  stream_count: 8",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary], stream_count: 8",
+          "            └─Selection mpp[tiflash]  lt(test.t1.c1, ?)",
+          "              └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select * from t1;",
+        "SQL": "explain format = 'plan_tree' select * from t1;",
         "Plan": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1 from t1 window w1 as (order by c1);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1 from t1 window w1 as (order by c1);",
         "Plan": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 10000.00 mpp[tiflash]  Column#5->Column#6",
-          "    └─Window 10000.00 mpp[tiflash]  row_number()->Column#5 over(order by test.t1.c1 rows between current row and current row)",
-          "      └─Sort 10000.00 mpp[tiflash]  test.t1.c1",
-          "        └─ExchangeReceiver 10000.00 mpp[tiflash]  ",
-          "          └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough, Compression: FAST",
-          "            └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column",
+          "    └─Window mpp[tiflash]  row_number()->Column#6 over(order by test.t1.c1 rows between current row and current row)",
+          "      └─Sort mpp[tiflash]  test.t1.c1",
+          "        └─ExchangeReceiver mpp[tiflash]  ",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough, Compression: FAST",
+          "            └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 10000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 10000.00 mpp[tiflash]  Column#5->Column#6",
-          "    └─Window 10000.00 mpp[tiflash]  row_number()->Column#5 over(order by test.t1.c1 rows between current row and current row)",
-          "      └─Sort 10000.00 mpp[tiflash]  test.t1.c1",
-          "        └─ExchangeReceiver 10000.00 mpp[tiflash]  ",
-          "          └─ExchangeSender 10000.00 mpp[tiflash]  ExchangeType: PassThrough, Compression: FAST",
-          "            └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column",
+          "    └─Window mpp[tiflash]  row_number()->Column#6 over(order by test.t1.c1 rows between current row and current row)",
+          "      └─Sort mpp[tiflash]  test.t1.c1",
+          "        └─ExchangeReceiver mpp[tiflash]  ",
+          "          └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough, Compression: FAST",
+          "            └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select row_number() over w1, count(c2) from t1 group by c1 having c1 > 10 window w1 as (partition by c1 order by c2);",
+        "SQL": "explain format = 'plan_tree' select row_number() over w1, count(c2) from t1 group by c1 having c1 > 10 window w1 as (partition by c1 order by c2);",
         "Plan": [
-          "TableReader 2666.67 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 2666.67 mpp[tiflash]  Column#6->Column#7, Column#4->Column#8",
-          "    └─Window 2666.67 mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row)",
-          "      └─Sort 2666.67 mpp[tiflash]  test.t1.c1, test.t1.c2",
-          "        └─Projection 2666.67 mpp[tiflash]  Column#4, test.t1.c1, test.t1.c2",
-          "          └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column#9)->Column#4, funcs:firstrow(test.t1.c1)->test.t1.c1, funcs:firstrow(Column#11)->test.t1.c2",
-          "            └─ExchangeReceiver 2666.67 mpp[tiflash]  ",
-          "              └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
-          "                └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column#9, funcs:firstrow(test.t1.c2)->Column#11",
-          "                  └─Selection 3333.33 mpp[tiflash]  gt(test.t1.c1, 10)",
-          "                    └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column",
+          "    └─Window mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row)",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c2",
+          "        └─Projection mpp[tiflash]  Column, test.t1.c1, test.t1.c2",
+          "          └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column)->Column, funcs:firstrow(test.t1.c1)->test.t1.c1, funcs:firstrow(Column)->test.t1.c2",
+          "            └─ExchangeReceiver mpp[tiflash]  ",
+          "              └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
+          "                └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column, funcs:firstrow(test.t1.c2)->Column",
+          "                  └─Selection mpp[tiflash]  gt(test.t1.c1, 10)",
+          "                    └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ],
         "Redact": [
-          "TableReader 2666.67 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 2666.67 mpp[tiflash]  Column#6->Column#7, Column#4->Column#8",
-          "    └─Window 2666.67 mpp[tiflash]  row_number()->Column#6 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row)",
-          "      └─Sort 2666.67 mpp[tiflash]  test.t1.c1, test.t1.c2",
-          "        └─Projection 2666.67 mpp[tiflash]  Column#4, test.t1.c1, test.t1.c2",
-          "          └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column#9)->Column#4, funcs:firstrow(test.t1.c1)->test.t1.c1, funcs:firstrow(Column#11)->test.t1.c2",
-          "            └─ExchangeReceiver 2666.67 mpp[tiflash]  ",
-          "              └─ExchangeSender 2666.67 mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
-          "                └─HashAgg 2666.67 mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column#9, funcs:firstrow(test.t1.c2)->Column#11",
-          "                  └─Selection 3333.33 mpp[tiflash]  gt(test.t1.c1, ?)",
-          "                    └─TableFullScan 10000.00 mpp[tiflash] table:t1 keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  Column, Column",
+          "    └─Window mpp[tiflash]  row_number()->Column#7 over(partition by test.t1.c1 order by test.t1.c2 rows between current row and current row)",
+          "      └─Sort mpp[tiflash]  test.t1.c1, test.t1.c2",
+          "        └─Projection mpp[tiflash]  Column, test.t1.c1, test.t1.c2",
+          "          └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:sum(Column)->Column, funcs:firstrow(test.t1.c1)->test.t1.c1, funcs:firstrow(Column)->test.t1.c2",
+          "            └─ExchangeReceiver mpp[tiflash]  ",
+          "              └─ExchangeSender mpp[tiflash]  ExchangeType: HashPartition, Compression: FAST, Hash Cols: [name: test.t1.c1, collate: binary]",
+          "                └─HashAgg mpp[tiflash]  group by:test.t1.c1, funcs:count(test.t1.c2)->Column, funcs:firstrow(test.t1.c2)->Column",
+          "                  └─Selection mpp[tiflash]  gt(test.t1.c1, ?)",
+          "                    └─TableFullScan mpp[tiflash] table:t1 keep order:false, stats:pseudo"
         ]
       }
     ]
@@ -1353,34 +1345,34 @@
     "Name": "TestTiFlashExtraColumnPrune",
     "Cases": [
       {
-        "SQL": "explain format = 'brief' select ta.c1 from t1 ta, t1 tb where ta.c1 * ta.c1 > ta.c2 + 10;",
+        "SQL": "explain format = 'plan_tree' select ta.c1 from t1 ta, t1 tb where ta.c1 * ta.c1 > ta.c2 + 10;",
         "Plan": [
-          "TableReader 80000000.00 root  MppVersion: 3, data:ExchangeSender",
-          "└─ExchangeSender 80000000.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "  └─Projection 80000000.00 mpp[tiflash]  test.t1.c1",
-          "    └─HashJoin 80000000.00 mpp[tiflash]  CARTESIAN inner join",
-          "      ├─ExchangeReceiver(Build) 8000.00 mpp[tiflash]  ",
-          "      │ └─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "      │   └─Projection 8000.00 mpp[tiflash]  test.t1.c1",
-          "      │     └─Selection 8000.00 mpp[tiflash]  gt(mul(test.t1.c1, test.t1.c1), plus(test.t1.c2, 10))",
-          "      │       └─TableFullScan 10000.00 mpp[tiflash] table:ta keep order:false, stats:pseudo",
-          "      └─TableFullScan(Probe) 10000.00 mpp[tiflash] table:tb keep order:false, stats:pseudo"
+          "TableReader root  MppVersion: 3, data:ExchangeSender",
+          "└─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "  └─Projection mpp[tiflash]  test.t1.c1",
+          "    └─HashJoin mpp[tiflash]  CARTESIAN inner join",
+          "      ├─ExchangeReceiver(Build) mpp[tiflash]  ",
+          "      │ └─ExchangeSender mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "      │   └─Projection mpp[tiflash]  test.t1.c1",
+          "      │     └─Selection mpp[tiflash]  gt(mul(test.t1.c1, test.t1.c1), plus(test.t1.c2, 10))",
+          "      │       └─TableFullScan mpp[tiflash] table:ta keep order:false, stats:pseudo",
+          "      └─TableFullScan(Probe) mpp[tiflash] table:tb keep order:false, stats:pseudo"
         ]
       },
       {
-        "SQL": "explain format = 'brief' select count(*) from t1 ta, t1 tb where ta.c1 * ta.c1 > ta.c2 + 10;",
+        "SQL": "explain format = 'plan_tree' select count(*) from t1 ta, t1 tb where ta.c1 * ta.c1 > ta.c2 + 10;",
         "Plan": [
-          "HashAgg 1.00 root  funcs:count(Column#8)->Column#7",
-          "└─TableReader 1.00 root  MppVersion: 3, data:ExchangeSender",
-          "  └─ExchangeSender 1.00 mpp[tiflash]  ExchangeType: PassThrough",
-          "    └─HashAgg 1.00 mpp[tiflash]  funcs:count(1)->Column#8",
-          "      └─Projection 80000000.00 mpp[tiflash]  test.t1.c1",
-          "        └─HashJoin 80000000.00 mpp[tiflash]  CARTESIAN inner join",
-          "          ├─ExchangeReceiver(Build) 8000.00 mpp[tiflash]  ",
-          "          │ └─ExchangeSender 8000.00 mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
-          "          │   └─Selection 8000.00 mpp[tiflash]  gt(mul(test.t1.c1, test.t1.c1), plus(test.t1.c2, 10))",
-          "          │     └─TableFullScan 10000.00 mpp[tiflash] table:ta keep order:false, stats:pseudo",
-          "          └─TableFullScan(Probe) 10000.00 mpp[tiflash] table:tb keep order:false, stats:pseudo"
+          "HashAgg root  funcs:count(Column)->Column",
+          "└─TableReader root  MppVersion: 3, data:ExchangeSender",
+          "  └─ExchangeSender mpp[tiflash]  ExchangeType: PassThrough",
+          "    └─HashAgg mpp[tiflash]  funcs:count(1)->Column",
+          "      └─Projection mpp[tiflash]  test.t1.c1",
+          "        └─HashJoin mpp[tiflash]  CARTESIAN inner join",
+          "          ├─ExchangeReceiver(Build) mpp[tiflash]  ",
+          "          │ └─ExchangeSender mpp[tiflash]  ExchangeType: Broadcast, Compression: FAST",
+          "          │   └─Selection mpp[tiflash]  gt(mul(test.t1.c1, test.t1.c1), plus(test.t1.c2, 10))",
+          "          │     └─TableFullScan mpp[tiflash] table:ta keep order:false, stats:pseudo",
+          "          └─TableFullScan(Probe) mpp[tiflash] table:tb keep order:false, stats:pseudo"
         ]
       }
     ]

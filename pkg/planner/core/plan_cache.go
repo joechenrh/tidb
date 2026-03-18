@@ -27,8 +27,8 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/planner/core/base"
 	core_metrics "github.com/pingcap/tidb/pkg/planner/core/metrics"
+	"github.com/pingcap/tidb/pkg/planner/core/operator/physicalop"
 	"github.com/pingcap/tidb/pkg/planner/core/resolve"
-	"github.com/pingcap/tidb/pkg/planner/util/debugtrace"
 	"github.com/pingcap/tidb/pkg/privilege"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
@@ -85,14 +85,6 @@ func SetParameterValuesIntoSCtx(sctx base.PlanContext, isNonPrep bool, markers [
 			param.InExecute = true
 		}
 		vars.PlanCacheParams.Append(val)
-	}
-	if vars.StmtCtx.EnableOptimizerDebugTrace && len(vars.PlanCacheParams.AllParamValues()) > 0 {
-		vals := vars.PlanCacheParams.AllParamValues()
-		valStrs := make([]string, len(vals))
-		for i, val := range vals {
-			valStrs[i] = val.String()
-		}
-		debugtrace.RecordAnyValuesWithNames(sctx, "Parameter datums for EXECUTE", valStrs)
 	}
 	vars.PlanCacheParams.SetForNonPrepCache(isNonPrep)
 	return nil
@@ -254,10 +246,10 @@ func clonePlanForInstancePlanCache(ctx context.Context, sctx sessionctx.Context,
 		}
 	}(time.Now())
 	fastPoint := stmt.PointGet.Executor != nil // this case is specially handled
-	pointPlan, isPoint := plan.(*PointGetPlan)
+	pointPlan, isPoint := plan.(*physicalop.PointGetPlan)
 	if fastPoint && isPoint { // special optimization for fast point plans
 		if stmt.PointGet.FastPlan == nil {
-			stmt.PointGet.FastPlan = new(PointGetPlan)
+			stmt.PointGet.FastPlan = new(physicalop.PointGetPlan)
 		}
 		FastClonePointGetForPlanCache(sctx.GetPlanCtx(), pointPlan, stmt.PointGet.FastPlan)
 		clonedPlan = stmt.PointGet.FastPlan
