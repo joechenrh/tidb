@@ -353,6 +353,108 @@ func extractHandleColumnsAndType(
 	return pkCols, pkTypes
 }
 
+// indexCheckBuilder abstracts SQL generation and row parsing for fast admin check.
+// handleTask depends only on this interface — it never checks idxInfo.MVIndex.
+type indexCheckBuilder interface {
+	// handleChecksum returns the SQL expression used for bucketing.
+	handleChecksum() string
+
+	// buildChecksumQuery returns complete SQL for the checksum comparison phase.
+	buildChecksumQuery(groupByKey, whereKey string) (tableSQL, indexSQL string)
+
+	// buildCheckRowQuery returns complete SQL for the detail row comparison phase.
+	buildCheckRowQuery(groupByKey string) (tableSQL, indexSQL string)
+
+	// getRecords parses query results into records with checksums for row comparison.
+	getRecords(ctx context.Context, se sessionctx.Context, sql string) ([]*recordWithChecksum, error)
+}
+
+type normalCheckBuilder struct {
+	tblName    string
+	handleCols []string
+	pkTypes    []*types.FieldType
+	idxInfo    *model.IndexInfo
+	tblInfo    *model.TableInfo
+}
+
+// checksumCols builds the columns list used for checksumming.
+// This logic is shared between buildChecksumQuery and buildCheckRowQuery.
+func (b *normalCheckBuilder) checksumCols() []string {
+	cols := make([]string, len(b.handleCols))
+	copy(cols, b.handleCols)
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		if tblCol.IsVirtualGenerated() && tblCol.Hidden {
+			cols = append(cols, tblCol.GeneratedExprString)
+		} else {
+			cols = append(cols, ColumnName(col.Name.O))
+		}
+	}
+	return cols
+}
+
+// handleChecksum returns the CRC32 expression over handle columns, used for bucketing.
+func (b *normalCheckBuilder) handleChecksum() string {
+	return crc32FromCols(b.handleCols)
+}
+
+// buildChecksumQuery returns complete SQL for the checksum comparison phase,
+// producing the same SQL as buildChecksumSQLForNormalIndex but with actual values
+// instead of %s placeholders.
+func (b *normalCheckBuilder) buildChecksumQuery(groupByKey, whereKey string) (string, string) {
+	checksumCols := b.checksumCols()
+	md5HandleAndIndexCol := crc32FromCols(checksumCols)
+	idxName := ColumnName(b.idxInfo.Name.String())
+
+	tableSQL := fmt.Sprintf(
+		"SELECT BIT_XOR(%s), %s, COUNT(*) FROM %s USE INDEX() WHERE %s = 0 GROUP BY %s",
+		md5HandleAndIndexCol, groupByKey, b.tblName, whereKey, groupByKey,
+	)
+	indexSQL := fmt.Sprintf(
+		"SELECT BIT_XOR(%s), %s, COUNT(*) FROM %s USE INDEX(%s) WHERE %s = 0 GROUP BY %s",
+		md5HandleAndIndexCol, groupByKey, b.tblName, idxName, whereKey, groupByKey,
+	)
+	return tableSQL, indexSQL
+}
+
+// buildCheckRowQuery returns complete SQL for the detail row comparison phase,
+// producing the same SQL as buildCheckRowSQLForNormalIndex but with actual values
+// instead of %s placeholders.
+func (b *normalCheckBuilder) buildCheckRowQuery(groupByKey string) (string, string) {
+	checksumCols := b.checksumCols()
+	idxName := ColumnName(b.idxInfo.Name.String())
+
+	md5Handle := strings.Join(b.handleCols, ", ")
+	checksumColsStr := strings.Join(checksumCols, ", ")
+	md5HandleAndIndexCol := fmt.Sprintf("CRC32(MD5(CONCAT_WS(0x2, %s)))", checksumColsStr)
+
+	tableSQL := fmt.Sprintf(
+		"SELECT /*+ read_from_storage(tikv[%s]) */ %s, %s FROM %s USE INDEX() WHERE %s = 0 ORDER BY %s",
+		b.tblName, checksumColsStr, md5HandleAndIndexCol, b.tblName, groupByKey, md5Handle,
+	)
+	indexSQL := fmt.Sprintf(
+		"SELECT %s, %s FROM %s USE INDEX(%s) WHERE %s = 0 ORDER BY %s",
+		checksumColsStr, md5HandleAndIndexCol, b.tblName, idxName, groupByKey, md5Handle,
+	)
+	return tableSQL, indexSQL
+}
+
+// indexColTypes builds field types for index columns. For normal indexes,
+// uses &tblCol.FieldType for each index column.
+func (b *normalCheckBuilder) indexColTypes() []*types.FieldType {
+	colTypes := make([]*types.FieldType, 0, len(b.idxInfo.Columns))
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		colTypes = append(colTypes, &tblCol.FieldType)
+	}
+	return colTypes
+}
+
+// getRecords parses query results into records with checksums for row comparison.
+func (b *normalCheckBuilder) getRecords(ctx context.Context, se sessionctx.Context, sql string) ([]*recordWithChecksum, error) {
+	return getRecordWithChecksum(ctx, se, sql, b.tblInfo.IsCommonHandle, b.pkTypes, b.indexColTypes())
+}
+
 type checkIndexWorker struct {
 	sctx       sessionctx.Context
 	dbName     string
