@@ -23,13 +23,12 @@ type indexCheckBuilder interface {
     // e.g. "CRC32(MD5(CONCAT_WS(0x2, `id`)))"
     handleChecksum() string
 
-    // checksumSQL returns SQL templates for the checksum comparison phase.
-    // Templates have 3 %s placeholders: groupByKey, whereKey, groupByKey.
-    checksumSQL() (tableSQL, indexSQL string)
+    // buildChecksumQuery returns complete SQL for the checksum comparison phase.
+    // The builder handles all internal formatting — caller only passes logical parameters.
+    buildChecksumQuery(groupByKey, whereKey string) (tableSQL, indexSQL string)
 
-    // checkRowSQL returns SQL templates for the detail row comparison phase.
-    // Templates have 1 %s placeholder: groupByKey (the WHERE filter).
-    checkRowSQL() (tableSQL, indexSQL string)
+    // buildCheckRowQuery returns complete SQL for the detail row comparison phase.
+    buildCheckRowQuery(groupByKey string) (tableSQL, indexSQL string)
 
     // getRecords parses query results into records with checksums for row comparison.
     // Each builder knows its own column layout (e.g. MV indexes map array columns to TypeJSON).
@@ -57,18 +56,16 @@ The only line that is index-type-aware becomes `newIndexCheckBuilder(...)`. Ever
 ```go
 builder := newIndexCheckBuilder(tblName, handleCols, pkTypes, idxInfo, tblInfo)
 md5Handle := builder.handleChecksum()
-tableChecksumSQL, indexChecksumSQL := builder.checksumSQL()
-tableCheckSQL, indexCheckSQL := builder.checkRowSQL()
 
 // Checksum phase loop — identical for MV and normal
 for tableRowCntToCheck > LookupCheckThreshold || checkTimes == 0 {
-    tableQuery := fmt.Sprintf(tableChecksumSQL, groupByKey, whereKey, groupByKey)
-    indexQuery := fmt.Sprintf(indexChecksumSQL, groupByKey, whereKey, groupByKey)
+    tableQuery, indexQuery := builder.buildChecksumQuery(groupByKey, whereKey)
     // ... compare checksums, narrow down bucket ...
 }
 
 // Detail phase — also identical
 if meetError {
+    tableQuery, indexQuery := builder.buildCheckRowQuery(groupByKey)
     idxRecords, _ := builder.getRecords(ctx, se, indexQuery)
     tblRecords, _ := builder.getRecords(ctx, se, tableQuery)
     // ... compare handle by handle ...
@@ -85,15 +82,15 @@ Unchanged parts:
 **`normalCheckBuilder`**: wraps existing `buildChecksumSQLForNormalIndex` and `buildCheckRowSQLForNormalIndex` logic. No behavior change.
 
 - `handleChecksum()` → `crc32FromCols(handleCols)`
-- `checksumSQL()` → `BIT_XOR(CRC32(MD5(CONCAT_WS(handle, idx_cols))))` grouped by bucket
-- `checkRowSQL()` → fetches individual rows with handle + index columns + per-row checksum
+- `buildChecksumQuery(groupByKey, whereKey)` → `BIT_XOR(CRC32(MD5(CONCAT_WS(handle, idx_cols))))` grouped by bucket
+- `buildCheckRowQuery(groupByKey)` → fetches individual rows with handle + index columns + per-row checksum
 - `getRecords()` → calls shared `getRecordWithChecksum` with standard `indexColTypes`
 
 **`mvCheckBuilder`**: wraps existing `buildChecksumSQLForMVIndex` and `buildCheckRowSQLForMVIndex` logic. No behavior change.
 
 - `handleChecksum()` → `crc32FromCols(handleCols + non-array index cols)`
-- `checksumSQL()` → `SUM(handle_crc * JSON_SUM_CRC32(array_expr))` on table side, `SUM(handle_crc * CRC32(hidden_col))` on index side
-- `checkRowSQL()` → table side fetches JSON arrays directly; index side uses subquery + `JSON_ARRAYAGG` + `GROUP BY handle`
+- `buildChecksumQuery(groupByKey, whereKey)` → `SUM(handle_crc * JSON_SUM_CRC32(array_expr))` on table side, `SUM(handle_crc * CRC32(hidden_col))` on index side
+- `buildCheckRowQuery(groupByKey)` → table side fetches JSON arrays directly; index side uses subquery + `JSON_ARRAYAGG` + `GROUP BY handle`
 - `getRecords()` → calls shared `getRecordWithChecksum` with array columns mapped to `TypeJSON`
 
 The existing 4 package-level `buildXxxForMVIndex` / `buildXxxForNormalIndex` functions become builder private methods.
