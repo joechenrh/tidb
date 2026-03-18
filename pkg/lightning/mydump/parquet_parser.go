@@ -90,6 +90,8 @@ type innerReader[T parquet.ColumnTypes] interface {
 type iterator interface {
 	SetReader(colReader file.ColumnChunkReader)
 
+	// Next reads the next value into the datum. The returned bool indicates
+	// whether the column value can skip CastColumnValue safely.
 	Next(*types.Datum) (bool, error)
 
 	Close() error

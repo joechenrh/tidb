@@ -108,24 +108,14 @@ func stringCanSkipCast(target *model.ColumnInfo) bool {
 	}
 }
 
-func stringCheckFunc(val types.Datum, targetFlen int, enc charset.Encoding) bool {
-	if val.Kind() != types.KindString && val.Kind() != types.KindBytes {
-		return false
-	}
-
-	b := val.GetBytes()
+func stringCheckFunc(b []byte, targetFlen int, enc charset.Encoding) bool {
 	if !enc.IsValid(b) {
 		return false
 	}
-	if targetFlen == types.UnspecifiedLength || len(b) <= targetFlen {
-		return true
-	}
-	// For binary charset, flen is byte count
 	if enc.Tp() == charset.EncodingTpBin {
-		return false
+		return targetFlen == types.UnspecifiedLength || len(b) <= targetFlen
 	}
-	// For non-binary charsets, flen is character count.
-	return utf8.RuneCount(b) <= targetFlen
+	return targetFlen == types.UnspecifiedLength || utf8.RuneCount(b) <= targetFlen
 }
 
 func resolveTemporalTarget(target *model.ColumnInfo) (tp byte, fsp int, canSkipCast bool) {
@@ -145,7 +135,7 @@ func resolveTemporalTarget(target *model.ColumnInfo) (tp byte, fsp int, canSkipC
 	}
 }
 
-var fspTruncateUnit = [7]time.Duration{
+var fspRoundUnit = [7]time.Duration{
 	time.Second,
 	100 * time.Millisecond,
 	10 * time.Millisecond,
@@ -155,14 +145,14 @@ var fspTruncateUnit = [7]time.Duration{
 	time.Microsecond,
 }
 
-func setTemporalDatum(t time.Time, d *types.Datum, loc *time.Location, adjustToUTC bool, tp byte, fsp int) {
-	if adjustToUTC {
+func setTemporalDatum(t time.Time, d *types.Datum, loc *time.Location, isAdjustedToUTC bool, tp byte, fsp int) {
+	if isAdjustedToUTC {
 		t = t.In(loc)
 	}
 	if tp == mysql.TypeDate {
 		t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 	} else if fsp < types.MaxFsp {
-		t = t.Truncate(fspTruncateUnit[fsp])
+		t = t.Round(fspRoundUnit[fsp])
 	}
 	d.SetMysqlTime(types.NewTime(types.FromGoTime(t), tp, fsp))
 }
@@ -359,7 +349,7 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 		return func(val int32, d *types.Datum) (bool, error) {
 			t := time.UnixMilli(int64(val)).In(time.UTC)
 			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-			return temporalSkipCast, nil
+			return temporalSkipCast && t.Year() <= 9999, nil
 		}
 	default:
 		fromUnsigned := isUnsignedParquetType(converted.converted)
@@ -402,13 +392,13 @@ func getInt64Setter(converted *columnType, loc *time.Location, target *model.Col
 		return func(val int64, d *types.Datum) (bool, error) {
 			t := time.UnixMicro(val).In(time.UTC)
 			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-			return temporalSkipCast, nil
+			return temporalSkipCast && t.Year() <= 9999, nil
 		}
 	case schema.ConvertedTypes.TimestampMillis:
 		return func(val int64, d *types.Datum) (bool, error) {
 			t := time.UnixMilli(val).In(time.UTC)
 			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-			return temporalSkipCast, nil
+			return temporalSkipCast && t.Year() <= 9999, nil
 		}
 	case schema.ConvertedTypes.Decimal:
 		checkFunc := getDecimalCheckFunc(converted.decimalMeta, target)
@@ -467,12 +457,14 @@ func getInt96Setter(converted *columnType, loc *time.Location, target *model.Col
 		// before 1970-01-01 may be truncated.
 		t := val.ToTime().In(time.UTC)
 		setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-		return temporalSkipCast, nil
+		return temporalSkipCast && t.Year() <= 9999, nil
 	}
 }
 
 func getFloat32Setter(target *model.ColumnInfo) setter[float32] {
-	skipCast := isTargetType(target, mysql.TypeFloat)
+	skipCast := isTargetType(target, mysql.TypeFloat) &&
+		target.GetDecimal() == types.UnspecifiedLength &&
+		!mysql.HasUnsignedFlag(target.GetFlag())
 	return func(val float32, d *types.Datum) (bool, error) {
 		d.SetFloat32(val)
 		return skipCast, nil
@@ -480,7 +472,9 @@ func getFloat32Setter(target *model.ColumnInfo) setter[float32] {
 }
 
 func getFloat64Setter(target *model.ColumnInfo) setter[float64] {
-	skipCast := isTargetType(target, mysql.TypeDouble)
+	skipCast := isTargetType(target, mysql.TypeDouble) &&
+		target.GetDecimal() == types.UnspecifiedLength &&
+		!mysql.HasUnsignedFlag(target.GetFlag())
 	return func(val float64, d *types.Datum) (bool, error) {
 		d.SetFloat64(val)
 		return skipCast, nil
@@ -511,14 +505,19 @@ func getBytesSetter[T parquet.ByteArray | parquet.FixedLenByteArray](
 			enc := charset.FindEncoding(target.GetCharset())
 			collation := target.GetCollate()
 			return func(val T, d *types.Datum) (bool, error) {
-				d.SetBytesAsString(val, collation, 0)
-				return stringCheckFunc(*d, targetFlen, enc), nil
+				skip := stringCheckFunc(val, targetFlen, enc)
+				if skip {
+					d.SetBytesAsString(val, collation, 0)
+				} else {
+					d.SetBytesAsString(val, "utf8mb4_bin", 0)
+				}
+				return skip, nil
 			}
 		}
 		fallthrough
 	default:
 		return func(val T, d *types.Datum) (bool, error) {
-			d.SetBytesAsString(val, "binary", 0)
+			d.SetBytesAsString(val, "utf8mb4_bin", 0)
 			return false, nil
 		}
 	}

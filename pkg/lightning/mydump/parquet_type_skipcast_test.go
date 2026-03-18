@@ -38,8 +38,8 @@ func newParquetTargetColumnInfo(tp byte, flag uint, flen int, decimal int, chars
 	return col
 }
 
-// TestSetTemporalDatumTruncation tests FSP truncation and DATE zeroing in setTemporalDatum.
-func TestSetTemporalDatumTruncation(t *testing.T) {
+// TestSetTemporalDatumRounding tests FSP rounding and DATE zeroing in setTemporalDatum.
+func TestSetTemporalDatumRounding(t *testing.T) {
 	t.Run("DATE zeroes time portion", func(t *testing.T) {
 		var d types.Datum
 		tm := time.Date(2025, 1, 2, 3, 4, 5, 123456000, time.UTC)
@@ -49,20 +49,30 @@ func TestSetTemporalDatumTruncation(t *testing.T) {
 		require.Equal(t, "2025-01-02", got.String())
 	})
 
-	t.Run("DATETIME(0) truncates sub-second", func(t *testing.T) {
+	t.Run("DATETIME(0) rounds sub-second up", func(t *testing.T) {
 		var d types.Datum
 		tm := time.Date(2025, 1, 2, 3, 4, 5, 999999000, time.UTC)
+		setTemporalDatum(tm, &d, nil, false, mysql.TypeDatetime, 0)
+		got := d.GetMysqlTime()
+		// 0.999999s rounds up to next second (same as types.RoundFrac)
+		require.Equal(t, "2025-01-02 03:04:06", got.String())
+	})
+
+	t.Run("DATETIME(0) rounds sub-second down", func(t *testing.T) {
+		var d types.Datum
+		tm := time.Date(2025, 1, 2, 3, 4, 5, 499000000, time.UTC)
 		setTemporalDatum(tm, &d, nil, false, mysql.TypeDatetime, 0)
 		got := d.GetMysqlTime()
 		require.Equal(t, "2025-01-02 03:04:05", got.String())
 	})
 
-	t.Run("DATETIME(3) truncates sub-millisecond", func(t *testing.T) {
+	t.Run("DATETIME(3) rounds sub-millisecond up", func(t *testing.T) {
 		var d types.Datum
-		tm := time.Date(2025, 1, 2, 3, 4, 5, 123999000, time.UTC)
+		tm := time.Date(2025, 1, 2, 3, 4, 5, 123900000, time.UTC)
 		setTemporalDatum(tm, &d, nil, false, mysql.TypeDatetime, 3)
 		got := d.GetMysqlTime()
-		require.Equal(t, "2025-01-02 03:04:05.123", got.String())
+		// 123.9ms rounds up to 124ms (same as types.RoundFrac)
+		require.Equal(t, "2025-01-02 03:04:05.124", got.String())
 	})
 
 	t.Run("DATETIME(6) keeps full microseconds", func(t *testing.T) {
@@ -115,21 +125,36 @@ func TestSetterSkipCastDecisions(t *testing.T) {
 			newParquetTargetColumnInfo(mysql.TypeLong, mysql.UnsignedFlag, 10, 0, "", ""),
 			true},
 
-		// Float / Double
-		{"float to float",
+		// Float / Double — no precision constraint
+		{"float to float (no precision)",
 			func(target *model.ColumnInfo) func() (bool, error) {
 				s := getFloat32Setter(target)
 				return func() (bool, error) { return s(1.0, &types.Datum{}) }
 			},
-			newParquetTargetColumnInfo(mysql.TypeFloat, 0, 12, 0, "", ""),
+			newParquetTargetColumnInfo(mysql.TypeFloat, 0, types.UnspecifiedLength, types.UnspecifiedLength, "", ""),
 			true},
-		{"double to double",
+		{"double to double (no precision)",
 			func(target *model.ColumnInfo) func() (bool, error) {
 				s := getFloat64Setter(target)
 				return func() (bool, error) { return s(1.0, &types.Datum{}) }
 			},
-			newParquetTargetColumnInfo(mysql.TypeDouble, 0, 22, 0, "", ""),
+			newParquetTargetColumnInfo(mysql.TypeDouble, 0, types.UnspecifiedLength, types.UnspecifiedLength, "", ""),
 			true},
+		// Float / Double — with precision constraint, must cast
+		{"float to float(5,2) not eligible",
+			func(target *model.ColumnInfo) func() (bool, error) {
+				s := getFloat32Setter(target)
+				return func() (bool, error) { return s(1.0, &types.Datum{}) }
+			},
+			newParquetTargetColumnInfo(mysql.TypeFloat, 0, 5, 2, "", ""),
+			false},
+		{"double to double unsigned not eligible",
+			func(target *model.ColumnInfo) func() (bool, error) {
+				s := getFloat64Setter(target)
+				return func() (bool, error) { return s(1.0, &types.Datum{}) }
+			},
+			newParquetTargetColumnInfo(mysql.TypeDouble, mysql.UnsignedFlag, types.UnspecifiedLength, types.UnspecifiedLength, "", ""),
+			false},
 
 		// Temporal
 		{"int32 date to DATE",
@@ -310,48 +335,40 @@ func TestStringCheckFunc(t *testing.T) {
 	utf8Enc := charset.FindEncoding(charset.CharsetUTF8MB4)
 
 	t.Run("valid utf8 within length", func(t *testing.T) {
-		d := types.NewStringDatum("hello")
-		require.True(t, stringCheckFunc(d, 10, utf8Enc))
+		require.True(t, stringCheckFunc([]byte("hello"), 10, utf8Enc))
 	})
 
 	t.Run("valid utf8 exceeds char length", func(t *testing.T) {
-		d := types.NewStringDatum("hello")
-		require.False(t, stringCheckFunc(d, 3, utf8Enc))
+		require.False(t, stringCheckFunc([]byte("hello"), 3, utf8Enc))
 	})
 
 	t.Run("multi-byte within char length", func(t *testing.T) {
-		d := types.NewStringDatum("你好") // 2 chars, 6 bytes
-		require.True(t, stringCheckFunc(d, 5, utf8Enc))
+		require.True(t, stringCheckFunc([]byte("你好"), 5, utf8Enc)) // 2 chars, 6 bytes
 	})
 
 	t.Run("invalid utf8 fails", func(t *testing.T) {
-		d := types.NewBytesDatum([]byte{0xff, 0xfe})
-		require.False(t, stringCheckFunc(d, 100, utf8Enc))
+		require.False(t, stringCheckFunc([]byte{0xff, 0xfe}, 100, utf8Enc))
 	})
 
 	t.Run("varbinary accepts any bytes", func(t *testing.T) {
 		binEnc := charset.FindEncoding("binary")
-		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.True(t, stringCheckFunc(d, 100, binEnc))
+		require.True(t, stringCheckFunc([]byte{0xff, 0xfe, 0x00}, 100, binEnc))
 	})
 
 	t.Run("varbinary exceeds byte length", func(t *testing.T) {
 		binEnc := charset.FindEncoding("binary")
-		d := types.NewBytesDatum([]byte{0xff, 0xfe, 0x00})
-		require.False(t, stringCheckFunc(d, 2, binEnc))
+		require.False(t, stringCheckFunc([]byte{0xff, 0xfe, 0x00}, 2, binEnc))
 	})
 
 	t.Run("varbinary multi-byte utf8 exceeds byte flen", func(t *testing.T) {
 		// 'é' = [0xC3, 0xA9]: 2 bytes, 1 rune. With flen=1 (byte count for
 		// binary), must return false even though RuneCount(b)=1 <= 1.
 		binEnc := charset.FindEncoding("binary")
-		d := types.NewBytesDatum([]byte{0xC3, 0xA9})
-		require.False(t, stringCheckFunc(d, 1, binEnc))
+		require.False(t, stringCheckFunc([]byte{0xC3, 0xA9}, 1, binEnc))
 	})
 
 	t.Run("negative flen means unlimited", func(t *testing.T) {
-		d := types.NewStringDatum("any length string")
-		require.True(t, stringCheckFunc(d, -1, utf8Enc))
+		require.True(t, stringCheckFunc([]byte("any length string"), -1, utf8Enc))
 	})
 }
 

@@ -95,10 +95,14 @@ type MDTableMeta struct {
 }
 
 // ParquetFileMeta holds runtime-only configuration for parquet parsing.
-// Fields are populated at execution time and are NOT persisted across subtasks.
+// Fields are populated at execution time
 type ParquetFileMeta struct {
-	allocator     memory.Allocator
-	Loc           *time.Location
+	allocator memory.Allocator
+	Loc       *time.Location
+	// TargetColumns holds target column metadata indexed by parquet file
+	// column position. Each entry corresponds to the parquet schema column
+	// at the same index. nil entries indicate unmapped columns. When
+	// TargetColumns itself is nil, no skip-cast optimization is applied.
 	TargetColumns []*model.ColumnInfo
 }
 

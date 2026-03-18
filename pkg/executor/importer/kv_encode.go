@@ -96,7 +96,9 @@ func newTableKVEncoderInner(
 	return enc, nil
 }
 
-// Encode table row into KVs.
+// Encode encodes table row data into KV pairs.
+// skipCast is aligned with row, which indicates that whether the values in row
+// can be directly used without casting to column type.
 func (en *TableKVEncoder) Encode(row []types.Datum, skipCast []bool, rowID int64) (*kv.Pairs, error) {
 	// we ignore warnings when encoding rows now, but warnings uses the same memory as parser, since the input
 	// row []types.Datum share the same underlying buf, and when doing CastValue, we're using hack.String/hack.Slice.
