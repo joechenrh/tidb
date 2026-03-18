@@ -99,6 +99,45 @@ func TestTemporalSetterUsesTargetType(t *testing.T) {
 	require.Equal(t, mysql.TypeDate, datum.GetMysqlTime().Type())
 }
 
+// TestTemporalSkipCastRangeValidation verifies that out-of-range temporal values
+// fall back to CastColumnValue (canSkipCast=false).
+func TestTemporalSkipCastRangeValidation(t *testing.T) {
+	t.Run("year > 9999 falls back to cast", func(t *testing.T) {
+		converted := &columnType{converted: schema.ConvertedTypes.TimestampMicros, IsAdjustedToUTC: true}
+		target := newParquetTargetColumnInfo(mysql.TypeDatetime, 0, 19, 6, "", "")
+		setter := getInt64Setter(converted, time.UTC, target)
+		// year 12000: 316224000000000000 micros after epoch
+		var d types.Datum
+		canSkip, err := setter(316224000000000000, &d)
+		require.NoError(t, err)
+		require.False(t, canSkip)
+	})
+
+	t.Run("DATETIME(0) rounding into year 10000 falls back to cast", func(t *testing.T) {
+		converted := &columnType{converted: schema.ConvertedTypes.TimestampMicros, IsAdjustedToUTC: true}
+		target := newParquetTargetColumnInfo(mysql.TypeDatetime, 0, 19, 0, "", "")
+		setter := getInt64Setter(converted, time.UTC, target)
+		// 9999-12-31 23:59:59.999999 in micros since epoch
+		// After rounding to fsp=0, becomes 10000-01-01 00:00:00 which is out of range.
+		us := time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC).UnixMicro()
+		var d types.Datum
+		canSkip, err := setter(us, &d)
+		require.NoError(t, err)
+		require.False(t, canSkip)
+	})
+
+	t.Run("valid datetime allows skip-cast", func(t *testing.T) {
+		converted := &columnType{converted: schema.ConvertedTypes.TimestampMicros, IsAdjustedToUTC: true}
+		target := newParquetTargetColumnInfo(mysql.TypeDatetime, 0, 19, 6, "", "")
+		setter := getInt64Setter(converted, time.UTC, target)
+		us := time.Date(2025, 6, 15, 12, 30, 0, 0, time.UTC).UnixMicro()
+		var d types.Datum
+		canSkip, err := setter(us, &d)
+		require.NoError(t, err)
+		require.True(t, canSkip)
+	})
+}
+
 // TestSetterSkipCastDecisions is the main table-driven test for all setter
 // skip-cast decisions across types: bool, float, double, temporal, string,
 // decimal, and integer signedness/range.

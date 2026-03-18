@@ -145,7 +145,10 @@ var fspRoundUnit = [7]time.Duration{
 	time.Microsecond,
 }
 
-func setTemporalDatum(t time.Time, d *types.Datum, loc *time.Location, isAdjustedToUTC bool, tp byte, fsp int) {
+// setTemporalDatum constructs a MySQL temporal datum from a Go time value.
+// It returns true if the resulting time is within MySQL's valid range [0000, 9999],
+// which callers use to decide skip-cast eligibility.
+func setTemporalDatum(t time.Time, d *types.Datum, loc *time.Location, isAdjustedToUTC bool, tp byte, fsp int) bool {
 	if isAdjustedToUTC {
 		t = t.In(loc)
 	}
@@ -155,6 +158,7 @@ func setTemporalDatum(t time.Time, d *types.Datum, loc *time.Location, isAdjuste
 		t = t.Round(fspRoundUnit[fsp])
 	}
 	d.SetMysqlTime(types.NewTime(types.FromGoTime(t), tp, fsp))
+	return t.Year() >= 0 && t.Year() <= 9999
 }
 
 func initializeMyDecimal(d *types.Datum) *types.MyDecimal {
@@ -348,8 +352,8 @@ func getInt32Setter(converted *columnType, loc *time.Location, target *model.Col
 	case schema.ConvertedTypes.TimeMillis:
 		return func(val int32, d *types.Datum) (bool, error) {
 			t := time.UnixMilli(int64(val)).In(time.UTC)
-			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-			return temporalSkipCast && t.Year() <= 9999, nil
+			inRange := setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+			return temporalSkipCast && inRange, nil
 		}
 	default:
 		fromUnsigned := isUnsignedParquetType(converted.converted)
@@ -391,14 +395,14 @@ func getInt64Setter(converted *columnType, loc *time.Location, target *model.Col
 	case schema.ConvertedTypes.TimeMicros, schema.ConvertedTypes.TimestampMicros:
 		return func(val int64, d *types.Datum) (bool, error) {
 			t := time.UnixMicro(val).In(time.UTC)
-			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-			return temporalSkipCast && t.Year() <= 9999, nil
+			inRange := setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+			return temporalSkipCast && inRange, nil
 		}
 	case schema.ConvertedTypes.TimestampMillis:
 		return func(val int64, d *types.Datum) (bool, error) {
 			t := time.UnixMilli(val).In(time.UTC)
-			setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-			return temporalSkipCast && t.Year() <= 9999, nil
+			inRange := setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+			return temporalSkipCast && inRange, nil
 		}
 	case schema.ConvertedTypes.Decimal:
 		checkFunc := getDecimalCheckFunc(converted.decimalMeta, target)
@@ -456,8 +460,8 @@ func getInt96Setter(converted *columnType, loc *time.Location, target *model.Col
 		// Julian day is uint32(days since noon on January 1, 4713 BC), so dates
 		// before 1970-01-01 may be truncated.
 		t := val.ToTime().In(time.UTC)
-		setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
-		return temporalSkipCast && t.Year() <= 9999, nil
+		inRange := setTemporalDatum(t, d, loc, converted.IsAdjustedToUTC, temporalType, temporalFSP)
+		return temporalSkipCast && inRange, nil
 	}
 }
 
