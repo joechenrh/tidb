@@ -949,41 +949,13 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 	}
 	defer restoreCtx()
 
-	var (
-		tableChecksumSQL string
-		indexChecksumSQL string
-		tableCheckSQL    string
-		indexCheckSQL    string
-		md5Handle        string
-
-		tableQuery string
-		indexQuery string
-	)
-
 	idxInfo := w.indexInfos[task.indexOffset]
 	tblInfo := w.table.Meta()
 	tblName := TableName(w.e.dbName, tblInfo.Name.String())
 	handleCols, pkTypes := extractHandleColumnsAndType(tblInfo)
 
-	indexColTypes := make([]*types.FieldType, 0, len(idxInfo.Columns))
-	for _, t := range idxInfo.Columns {
-		tblCol := tblInfo.Columns[t.Offset]
-		if len(ExtractCastArrayExpr(tblCol)) > 0 {
-			indexColTypes = append(indexColTypes, types.NewFieldType(mysql.TypeJSON))
-		} else {
-			indexColTypes = append(indexColTypes, &tblCol.FieldType)
-		}
-	}
-
-	if idxInfo.MVIndex {
-		md5Handle, tableChecksumSQL, indexChecksumSQL = buildChecksumSQLForMVIndex(tblName, handleCols, idxInfo, tblInfo)
-		tableCheckSQL, indexCheckSQL = buildCheckRowSQLForMVIndex(tblName, handleCols, idxInfo, tblInfo)
-	} else {
-		// We will add non-array columns of the MV Index into handle too, to simplify the SQL.
-		md5Handle = crc32FromCols(handleCols)
-		tableChecksumSQL, indexChecksumSQL = buildChecksumSQLForNormalIndex(tblName, handleCols, idxInfo, tblInfo)
-		tableCheckSQL, indexCheckSQL = buildCheckRowSQLForNormalIndex(tblName, handleCols, idxInfo, tblInfo)
-	}
+	builder := newIndexCheckBuilder(tblName, handleCols, pkTypes, idxInfo, tblInfo)
+	md5Handle := builder.handleChecksum()
 
 	if _, err = se.GetSQLExecutor().ExecuteInternal(ctx, "begin"); err != nil {
 		return err
@@ -1011,8 +983,7 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 			whereKey = "0"
 		}
 
-		tableQuery = fmt.Sprintf(tableChecksumSQL, groupByKey, whereKey, groupByKey)
-		indexQuery = fmt.Sprintf(indexChecksumSQL, groupByKey, whereKey, groupByKey)
+		tableQuery, indexQuery := builder.buildChecksumQuery(groupByKey, whereKey)
 		verifyIndexSideQuery(ctx, se, indexQuery)
 
 		logutil.BgLogger().Info(
@@ -1075,9 +1046,6 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 			}
 		}
 
-		// TODO(joechenrh): remove me after testing.
-		// meetError = true
-		// currentOffset = int(tableChecksum[0].bucket)
 		offset += currentOffset * mod
 		mod *= CheckTableFastBucketSize
 	}
@@ -1091,8 +1059,7 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 
 	if meetError {
 		groupByKey := fmt.Sprintf("((CAST(%s AS SIGNED) - %d) MOD %d)", md5Handle, offset, mod)
-		tableQuery = fmt.Sprintf(tableCheckSQL, groupByKey)
-		indexQuery = fmt.Sprintf(indexCheckSQL, groupByKey)
+		tableQuery, indexQuery := builder.buildCheckRowQuery(groupByKey)
 		verifyIndexSideQuery(ctx, se, indexQuery)
 
 		var (
@@ -1101,11 +1068,11 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 			idxRecords      []*recordWithChecksum
 		)
 
-		if idxRecords, err = getRecordWithChecksum(ctx, se, indexQuery, tblInfo.IsCommonHandle, pkTypes, indexColTypes); err != nil {
+		if idxRecords, err = builder.getRecords(ctx, se, indexQuery); err != nil {
 			return err
 		}
 
-		if tblRecords, err = getRecordWithChecksum(ctx, se, tableQuery, tblInfo.IsCommonHandle, pkTypes, indexColTypes); err != nil {
+		if tblRecords, err = builder.getRecords(ctx, se, tableQuery); err != nil {
 			return err
 		}
 
