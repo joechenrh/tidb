@@ -51,42 +51,36 @@ The target type for casting (e.g., DOUBLE, CHAR(10)) is carried in the function 
 1. Evaluate `array_expr` as a JSON array
 2. If `array_expr` is NULL: return `CRC32(MD5(prefix_string))` — matches the index-side behavior where `CONCAT_WS(0x2, prefix, NULL)` skips the NULL argument, leaving only the prefix
 3. For each element `e`:
-   a. Cast `e` to the target type via the expression framework's cast functions (e.g., `builtinCastRealAsStringSig` for DOUBLE) — this is the **same code path** that `CONCAT_WS` uses on the index side when implicitly casting column values to string
+   a. Cast `e` to the target type, then convert to string via `Datum.ConvertTo(sc, targetFieldType)` → `Datum.ConvertTo(sc, stringFieldType)`
    b. Compute `CRC32(MD5(CONCAT_WS(0x2, prefix_string, str)))`
 4. Deduplicate by CRC32 result, then XOR all unique CRC32s together (dedup must happen after casting, because different JSON representations like int `1` and float `1.0` may produce the same cast result — matching index dedup semantics)
 5. Return the result as UNSIGNED INT
 
-### Type Safety: Why EvalString Matters
+### Type Safety
 
-The checksum is correct only when the table-side and index-side string representations of array elements are **identical**. The current `JSON_SUM_CRC32` uses a custom `convertJSON2String` function with per-type conversion logic that is a **different code path** from `EvalString` used by `CRC32()`/`CONCAT_WS()` on the index side:
+The checksum is correct only when the table-side and index-side string representations of array elements are **identical**.
 
-| Type | `convertJSON2String` (current) | `EvalString` (index side) | Risk |
-|------|-------------------------------|--------------------------|------|
-| ETInt | `strconv.Itoa(int(val))` | standard int-to-string | Low |
-| ETReal | `strconv.FormatFloat(val, 'f', -1, digit)` | may use different format | **High** |
-| ETDecimal | not supported | n/a | Blocked |
-| ETDatetime | `res.String()` | datetime-to-string | Medium |
-| ETDuration | `dur.String()` | duration-to-string | Medium |
+**Current problem**: `JSON_SUM_CRC32` uses a custom `convertJSON2String` (builtin_json.go:234–305) with per-type formatting logic that may diverge from the index side's implicit CAST-to-STRING path. For example, ETReal uses `strconv.FormatFloat(val, 'f', -1, digit)` without `ProduceStrWithSpecifiedTp`, while the index-side CAST may include it.
 
-`JSON_ARRAY_XOR_CRC32` fixes this by using `EvalString` for all types:
+**Phase C approach**: Use `Datum.ConvertTo` for type conversion — this goes through TiDB's standard type conversion system. While not 100% guaranteed to match the expression layer's `builtinCastXXXAsStringSig` in all edge cases, it is far more aligned than the current custom `convertJSON2String`, and covers all supported CAST ARRAY types.
 
 ```go
-// Pseudocode for element processing.
-// Key: use expression framework's cast functions, NOT a custom conversion.
+// Pseudocode for element processing:
 for each element in json_array {
-    // Build and evaluate: CAST(CAST(element AS targetType) AS STRING)
-    // This goes through builtinCastXXXAsStringSig (e.g., builtinCastRealAsStringSig
-    // for DOUBLE), the same code path CONCAT_WS uses on the index side.
-    castExpr := expression.BuildCastFunction(ctx, jsonElementExpr, targetFieldType)
-    strExpr := expression.BuildCastFunction(ctx, castExpr, stringFieldType)
-    str, _, _ := strExpr.EvalString(ctx, row)
-
+    // 1. Convert JSON element to target type datum
+    datum := convertJSONToDatum(element, targetFieldType)
+    // 2. Convert datum to string via standard type system
+    strDatum, _ := datum.ConvertTo(sc, stringFieldType)
+    str := strDatum.GetString()
+    // 3. Compute CRC with prefix
     crc := crc32.ChecksumIEEE([]byte(CONCAT_WS(0x2, prefix, str)))
     result ^= crc  // dedup by CRC value, then XOR unique CRCs
 }
 ```
 
-This means **all CAST ARRAY types become safe**, including ETDecimal and ETReal. The `indexSupportFastCheck` type restriction in builder.go can be removed.
+**Correctness is verified by per-type tests**, not by code-path analysis alone. Each supported type must have a test that inserts data, runs `admin check table` (fast), and verifies no false positives.
+
+With `Datum.ConvertTo` + per-type tests, all CAST ARRAY types should be safe, including ETDecimal and ETReal. The `indexSupportFastCheck` type restriction in builder.go can be removed once tests pass for each type.
 
 ## SQL Changes
 
@@ -151,7 +145,7 @@ Each supported type needs an explicit test: insert data → `admin check table` 
 
 - Unified aggregation: both MV and normal indexes use `BIT_XOR`
 - No `MOD 1024` overflow protection (XOR is bounded to 32 bits)
-- Type-safe: `EvalString`-based conversion supports all CAST ARRAY types
+- Type-safe: `Datum.ConvertTo`-based conversion replaces custom `convertJSON2String`, supports all CAST ARRAY types (verified by per-type tests)
 - `handleChecksum()` unified between builders
 - Correctness fix: eliminates `convertJSON2String` divergence risk
 
