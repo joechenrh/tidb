@@ -790,12 +790,12 @@ func (b *mvXorCheckBuilder) getRecords(ctx context.Context, se sessionctx.Contex
 }
 
 // newIndexCheckBuilder creates the appropriate indexCheckBuilder for the given index.
-// For MV indexes, it returns an mvCheckBuilder; for normal indexes, a normalCheckBuilder.
+// For MV indexes, it returns an mvXorCheckBuilder; for normal indexes, a normalCheckBuilder.
 func newIndexCheckBuilder(tblName string, handleCols []string, pkTypes []*types.FieldType,
 	idxInfo *model.IndexInfo, tblInfo *model.TableInfo,
 ) indexCheckBuilder {
 	if idxInfo.MVIndex {
-		return &mvCheckBuilder{
+		return &mvXorCheckBuilder{
 			tblName: tblName, handleCols: handleCols, pkTypes: pkTypes,
 			idxInfo: idxInfo, tblInfo: tblInfo,
 		}

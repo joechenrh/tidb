@@ -523,16 +523,8 @@ func indexSupportFastCheck(tblInfo *model.TableInfo, idxInfo *model.IndexInfo) b
 			return false
 		}
 
-		// Currently, MV Index only support fast check for part of data types.
-		tblCol := tblInfo.Columns[col.Offset]
-		if len(ExtractCastArrayExpr(tblCol)) > 0 {
-			// TODO(joechenrh): support all data types.
-			switch tblCol.FieldType.ArrayType().EvalType() {
-			case types.ETDatetime, types.ETDuration, types.ETString, types.ETInt, types.ETReal:
-			default:
-				return false
-			}
-		}
+		// MV Index array columns: all CAST ARRAY types are supported by
+		// JSON_ARRAY_XOR_CRC32. No type restriction needed.
 	}
 
 	return true
