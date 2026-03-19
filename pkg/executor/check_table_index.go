@@ -76,9 +76,6 @@ var (
 	// LookupCheckThreshold is the threshold to do check, exported for test
 	LookupCheckThreshold = int64(100)
 
-	// CheckTableFastBucketSize is the bucket size of fast check table, exported for test
-	CheckTableFastBucketSize = 1024
-
 	// castArrayRegexp is the regexp to extract the expression from `cast(EXPR as TYPE array)`.
 	castArrayRegexp = regexp.MustCompile(`(?i)cast\s*\(\s*(.+?)\s+as\s+.+?\s+array\s*\)`)
 )
@@ -770,6 +767,7 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 		return err
 	}
 
+	bucketSize := int(CheckTableFastBucketSize.Load())
 	var (
 		checkTimes         = 0
 		tableRowCntToCheck = int64(0)
@@ -787,7 +785,7 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 			break
 		}
 		whereKey := fmt.Sprintf("((CAST(%s AS SIGNED) - %d) MOD %d)", md5Handle, offset, mod)
-		groupByKey := fmt.Sprintf("((CAST(%s AS SIGNED) - %d) DIV %d MOD %d)", md5Handle, offset, mod, CheckTableFastBucketSize)
+		groupByKey := fmt.Sprintf("((CAST(%s AS SIGNED) - %d) DIV %d MOD %d)", md5Handle, offset, mod, bucketSize)
 		if checkTimes == 1 {
 			whereKey = "0"
 		}
@@ -856,7 +854,7 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 		}
 
 		offset += currentOffset * mod
-		mod *= CheckTableFastBucketSize
+		mod *= bucketSize
 	}
 
 	failpoint.Inject("mockMeetErrorInCheckTable", func(val failpoint.Value) {

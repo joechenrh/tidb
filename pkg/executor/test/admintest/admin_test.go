@@ -1579,7 +1579,7 @@ func TestAdminCheckTableFailed(t *testing.T) {
 func TestAdminCheckTableErrorLocate(t *testing.T) {
 	store, domain := testkit.CreateMockStoreAndDomain(t)
 
-	executor.CheckTableFastBucketSize = 8
+	executor.CheckTableFastBucketSize.Store(8)
 
 	seed := time.Now().UnixNano()
 	rand := rand.New(rand.NewSource(seed))
@@ -1711,7 +1711,7 @@ func TestAdminCheckTableErrorLocate(t *testing.T) {
 func TestAdminCheckTableErrorLocateForClusterIndex(t *testing.T) {
 	store, domain := testkit.CreateMockStoreAndDomain(t)
 
-	executor.CheckTableFastBucketSize = 8
+	executor.CheckTableFastBucketSize.Store(8)
 
 	seed := time.Now().UnixNano()
 	rand := rand.New(rand.NewSource(seed))
@@ -2271,7 +2271,7 @@ func TestExtractCastArrayExpr(t *testing.T) {
 func TestAdminCheckMVIndex(t *testing.T) {
 	store, domain := testkit.CreateMockStoreAndDomain(t)
 
-	executor.CheckTableFastBucketSize = 4
+	executor.CheckTableFastBucketSize.Store(4)
 	executor.LookupCheckThreshold = 1
 
 	type testCase struct {
