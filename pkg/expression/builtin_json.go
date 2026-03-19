@@ -17,6 +17,7 @@ package expression
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	goJSON "encoding/json"
 	"fmt"
 	"hash/crc32"
@@ -39,6 +40,7 @@ import (
 var (
 	_ functionClass = &jsonTypeFunctionClass{}
 	_ functionClass = &jsonSumCRC32FunctionClass{}
+	_ functionClass = &jsonArrayXorCRC32FunctionClass{}
 	_ functionClass = &jsonExtractFunctionClass{}
 	_ functionClass = &jsonUnquoteFunctionClass{}
 	_ functionClass = &jsonQuoteFunctionClass{}
@@ -69,6 +71,7 @@ var (
 
 	_ builtinFunc = &builtinJSONTypeSig{}
 	_ builtinFunc = &builtinJSONSumCRC32Sig{}
+	_ builtinFunc = &builtinJSONArrayXorCRC32Sig{}
 	_ builtinFunc = &builtinJSONQuoteSig{}
 	_ builtinFunc = &builtinJSONUnquoteSig{}
 	_ builtinFunc = &builtinJSONArraySig{}
@@ -363,6 +366,137 @@ func BuildJSONSumCrc32FunctionWithCheck(ctx BuildContext, expr Expression, tp *t
 		RetType:  types.NewFieldType(mysql.TypeLonglong),
 		Function: f,
 	}, err
+}
+
+type jsonArrayXorCRC32FunctionClass struct {
+	baseFunctionClass
+
+	tp *types.FieldType
+}
+
+func (c *jsonArrayXorCRC32FunctionClass) verifyArgs(ctx EvalContext, args []Expression) error {
+	if err := c.baseFunctionClass.verifyArgs(args); err != nil {
+		return err
+	}
+
+	if args[0].GetType(ctx).EvalType() != types.ETJson {
+		return ErrInvalidTypeForJSON.GenWithStackByArgs(1, "JSON_ARRAY_XOR_CRC32")
+	}
+
+	return nil
+}
+
+func (c *jsonArrayXorCRC32FunctionClass) getFunction(ctx BuildContext, args []Expression) (sig builtinFunc, err error) {
+	if err := c.verifyArgs(ctx.GetEvalCtx(), args); err != nil {
+		return nil, err
+	}
+
+	bf, err := newBaseBuiltinFunc(ctx, c.funcName, args, types.NewFieldType(mysql.TypeLonglong))
+	if err != nil {
+		return nil, err
+	}
+	sig = &builtinJSONArrayXorCRC32Sig{bf, c.tp.ArrayType()}
+	return sig, nil
+}
+
+// builtinJSONArrayXorCRC32Sig is the signature for JSON_ARRAY_XOR_CRC32, which is used in internal SQL only.
+type builtinJSONArrayXorCRC32Sig struct {
+	baseBuiltinFunc
+
+	arrayTp *types.FieldType
+}
+
+func (b *builtinJSONArrayXorCRC32Sig) Clone() builtinFunc {
+	newSig := &builtinJSONArrayXorCRC32Sig{arrayTp: b.arrayTp}
+	newSig.cloneFrom(&b.baseBuiltinFunc)
+	return newSig
+}
+
+func (b *builtinJSONArrayXorCRC32Sig) evalInt(ctx EvalContext, row chunk.Row) (res int64, isNull bool, err error) {
+	// Evaluate array arg (args[0]).
+	val, isNull, err := b.args[0].EvalJSON(ctx, row)
+	if err != nil {
+		return 0, false, err
+	}
+
+	// Evaluate prefix arg (args[1]).
+	prefix, prefixIsNull, err := b.args[1].EvalString(ctx, row)
+	if err != nil {
+		return 0, false, err
+	}
+	if prefixIsNull {
+		return 0, true, nil
+	}
+
+	separator := string([]byte{0x02})
+
+	// NULL array → CRC32(MD5(prefix)).
+	if isNull {
+		hash := md5.Sum([]byte(prefix))
+		hexStr := fmt.Sprintf("%x", hash)
+		return int64(crc32.ChecksumIEEE([]byte(hexStr))), false, nil
+	}
+
+	if val.TypeCode != types.JSONTypeCodeArray {
+		return 0, false, ErrInvalidTypeForJSON.GenWithStackByArgs(1, "JSON_ARRAY_XOR_CRC32")
+	}
+
+	ft := b.arrayTp
+	f := convertJSON2String(ft.EvalType())
+	if f == nil {
+		return 0, false, ErrNotSupportedYet.GenWithStackByArgs(fmt.Sprintf("calculating xor crc32 of %s", ft.String()))
+	}
+
+	seen := make(map[uint32]struct{}, val.GetElemCount())
+	var result uint32
+
+	for i := range val.GetElemCount() {
+		str, err := f(fakeSctx, val.ArrayGetElem(i), ft)
+		if err != nil {
+			if ErrInvalidJSONForFuncIndex.Equal(err) {
+				err = errors.Errorf("Invalid JSON value for CAST to type %s", ft.CompactStr())
+			}
+			return 0, false, err
+		}
+
+		concat := prefix + separator + str
+		hash := md5.Sum([]byte(concat))
+		hexStr := fmt.Sprintf("%x", hash)
+		crc := crc32.ChecksumIEEE([]byte(hexStr))
+
+		if _, ok := seen[crc]; !ok {
+			seen[crc] = struct{}{}
+			result ^= crc
+		}
+	}
+
+	return int64(result), false, nil
+}
+
+// BuildJSONArrayXorCrc32FunctionWithCheck builds a JSON_ARRAY_XOR_CRC32 ScalarFunction from the Expressions and return error if any.
+// The logic is almost the same as build CAST function, except that the return type is fixed to bigint.
+func BuildJSONArrayXorCrc32FunctionWithCheck(ctx BuildContext, arrayExpr, prefixExpr Expression, tp *types.FieldType) (res Expression, err error) {
+	argType := arrayExpr.GetType(ctx.GetEvalCtx())
+	// If source argument's nullable, then target type should be nullable.
+	if !mysql.HasNotNullFlag(argType.GetFlag()) {
+		tp.DelFlag(mysql.NotNullFlag)
+	}
+	arrayExpr = TryPushCastIntoControlFunctionForHybridType(ctx, arrayExpr, tp)
+
+	if tp.EvalType() != types.ETJson || !tp.IsArray() {
+		return nil, errors.Errorf("json_array_xor_crc32 can only be built on JSON array, got type %s", tp.EvalType())
+	}
+
+	fc := &jsonArrayXorCRC32FunctionClass{baseFunctionClass{ast.JSONArrayXorCrc32, 2, 2}, tp}
+	f, err := fc.getFunction(ctx, []Expression{arrayExpr, prefixExpr})
+	if err != nil {
+		return nil, err
+	}
+	return &ScalarFunction{
+		FuncName: ast.NewCIStr(ast.JSONArrayXorCrc32),
+		RetType:  types.NewFieldType(mysql.TypeLonglong),
+		Function: f,
+	}, nil
 }
 
 type jsonExtractFunctionClass struct {

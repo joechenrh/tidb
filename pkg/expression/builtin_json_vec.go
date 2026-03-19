@@ -16,6 +16,7 @@ package expression
 
 import (
 	"bytes"
+	"crypto/md5"
 	goJSON "encoding/json"
 	"fmt"
 	"hash/crc32"
@@ -971,6 +972,90 @@ func (b *builtinJSONSumCRC32Sig) vecEvalInt(ctx EvalContext, input *chunk.Chunk,
 			sum += k % JSONCRC32Mod
 		}
 		i64s[i] = sum
+	}
+
+	return nil
+}
+
+func (b *builtinJSONArrayXorCRC32Sig) vectorized() bool {
+	return true
+}
+
+func (b *builtinJSONArrayXorCRC32Sig) vecEvalInt(ctx EvalContext, input *chunk.Chunk, result *chunk.Column) error {
+	ft := b.arrayTp
+	f := convertJSON2String(ft.EvalType())
+	if f == nil {
+		return ErrNotSupportedYet.GenWithStackByArgs(fmt.Sprintf("calculating xor crc32 of %s", ft.String()))
+	}
+
+	nr := input.NumRows()
+	jsonBuf, err := b.bufAllocator.get()
+	if err != nil {
+		return err
+	}
+	defer b.bufAllocator.put(jsonBuf)
+	if err = b.args[0].VecEvalJSON(ctx, input, jsonBuf); err != nil {
+		return err
+	}
+
+	prefixBuf, err := b.bufAllocator.get()
+	if err != nil {
+		return err
+	}
+	defer b.bufAllocator.put(prefixBuf)
+	if err = b.args[1].VecEvalString(ctx, input, prefixBuf); err != nil {
+		return err
+	}
+
+	result.ResizeInt64(nr, false)
+	// If prefix is null, result is null.
+	result.MergeNulls(prefixBuf)
+	i64s := result.Int64s()
+
+	separator := string([]byte{0x02})
+
+	for i := range nr {
+		if result.IsNull(i) {
+			continue
+		}
+
+		prefix := prefixBuf.GetString(i)
+
+		// NULL array → CRC32(MD5(prefix)).
+		if jsonBuf.IsNull(i) {
+			hash := md5.Sum([]byte(prefix))
+			hexStr := fmt.Sprintf("%x", hash)
+			i64s[i] = int64(crc32.ChecksumIEEE([]byte(hexStr)))
+			continue
+		}
+
+		jsonItem := jsonBuf.GetJSON(i)
+		if jsonItem.TypeCode != types.JSONTypeCodeArray {
+			return ErrInvalidTypeForJSON.GenWithStackByArgs(1, "JSON_ARRAY_XOR_CRC32")
+		}
+
+		seen := make(map[uint32]struct{}, jsonItem.GetElemCount())
+		var xorResult uint32
+
+		for j := range jsonItem.GetElemCount() {
+			item, err := f(fakeSctx, jsonItem.ArrayGetElem(j), ft)
+			if err != nil {
+				if ErrInvalidJSONForFuncIndex.Equal(err) {
+					err = errors.Errorf("Invalid JSON value for CAST to type %s", ft.CompactStr())
+				}
+				return err
+			}
+			concat := prefix + separator + item
+			hash := md5.Sum([]byte(concat))
+			hexStr := fmt.Sprintf("%x", hash)
+			crc := crc32.ChecksumIEEE([]byte(hexStr))
+
+			if _, ok := seen[crc]; !ok {
+				seen[crc] = struct{}{}
+				xorResult ^= crc
+			}
+		}
+		i64s[i] = int64(xorResult)
 	}
 
 	return nil
