@@ -712,11 +712,11 @@ func (b *mvXorCheckBuilder) buildCheckRowQuery(groupByKey string) (string, strin
 			tableFilterCol = fmt.Sprintf("(JSON_LENGTH(%s) > 0 or JSON_LENGTH(%s) is null)", rawExpr, rawExpr)
 			tableSelectCols = append(tableSelectCols, rawExpr)
 
-			// Index subquery: CRC32 of hidden col and cast-back to array element type for reporting.
-			alias := buildAlias(col.Name, "")
-			indexSubqueryCols = append(indexSubqueryCols, fmt.Sprintf("CRC32(%s) as %s", colName, alias))
+			// Index subquery columns for array column:
+			// 1. The raw hidden col for CRC32 in the per-entry checksum (computed in subquery)
 			indexCRC32Cols = append(indexCRC32Cols, colName)
 
+			// 2. Cast-back expression for error reporting via JSON_ARRAYAGG
 			aliasArray := buildAlias(col.Name, "_array")
 			arrayExpr := strings.Replace(generatedExpr, "array", "", 1)
 			arrayExpr = strings.Replace(arrayExpr, rawExpr, colName, 1)
@@ -740,8 +740,12 @@ func (b *mvXorCheckBuilder) buildCheckRowQuery(groupByKey string) (string, strin
 	prefix := fmt.Sprintf("CONCAT_WS(0x2, %s)", strings.Join(prefixCols, ", "))
 	tableArrayExpr = fmt.Sprintf("JSON_ARRAY_XOR_CRC32%s, %s)", inner, prefix)
 
-	// Index side checksum: BIT_XOR(CRC32(MD5(CONCAT_WS(0x2, handle, non_array, hidden_col)))) per handle
-	indexCRC32Expr := fmt.Sprintf("BIT_XOR(CRC32(MD5(CONCAT_WS(0x2, %s))))", strings.Join(indexCRC32Cols, ", "))
+	// Index side checksum: compute CRC32(MD5(CONCAT_WS(...))) per entry IN the subquery,
+	// then BIT_XOR in the outer query. This avoids referencing raw columns in the outer scope.
+	entryCRCAlias := buildAlias(ast.NewCIStr("entry"), "_crc")
+	entryCRCExpr := fmt.Sprintf("CRC32(MD5(CONCAT_WS(0x2, %s))) as %s", strings.Join(indexCRC32Cols, ", "), entryCRCAlias)
+	indexSubqueryCols = append(indexSubqueryCols, entryCRCExpr)
+	indexCRC32Expr := fmt.Sprintf("BIT_XOR(%s)", entryCRCAlias)
 
 	handleColsStr := strings.Join(b.handleCols, ", ")
 
@@ -1014,12 +1018,12 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 		mod *= CheckTableFastBucketSize
 	}
 
-	failpoint.Inject("mockMeetErrorInCheckTable", func(val failpoint.Value) {
+	if val, _err_ := failpoint.Eval(_curpkg_("mockMeetErrorInCheckTable")); _err_ == nil {
 		// Only set meetError when no error detected.
 		if v, ok := val.(bool); ok && !meetError {
 			meetError = v
 		}
-	})
+	}
 
 	if meetError {
 		groupByKey := fmt.Sprintf("((CAST(%s AS SIGNED) - %d) MOD %d)", md5Handle, offset, mod)
