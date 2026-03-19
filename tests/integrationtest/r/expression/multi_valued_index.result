@@ -516,6 +516,7 @@ drop table t;
 create table t (j json not null, str varchar(5) collate gbk_chinese_ci,  KEY `idx` ((cast(`j` as unsigned array)),`str`));
 insert into t values ('1', 'abcde');
 drop table t;
+set tidb_enable_fast_table_check = 1;
 drop table if exists int_table;
 CREATE TABLE int_table(i INT PRIMARY KEY, j JSON, KEY mvi((CAST(j AS UNSIGNED ARRAY))));
 insert into int_table values(1, "[5, 7]"), (4, "[0, 8]");
