@@ -27,18 +27,25 @@ Both sides produce the same result.
 
 ## New Builtin Function: `JSON_ARRAY_XOR_CRC32`
 
-Replaces `JSON_SUM_CRC32`. Takes additional parameters for the "prefix" columns (handle + non-array index cols).
+Replaces `JSON_SUM_CRC32`. Takes 2 parameters: the array expression and a pre-computed prefix string.
 
-**Signature**: `JSON_ARRAY_XOR_CRC32(array_expr, prefix_col1, prefix_col2, ...)`
+**Signature**: `JSON_ARRAY_XOR_CRC32(array_expr, prefix_string)`
+
+The prefix is computed in SQL before being passed to the function:
+```sql
+JSON_ARRAY_XOR_CRC32(array_expr, CONCAT_WS(0x2, handle_cols, non_array_cols))
+```
 
 **Semantics**:
 1. Evaluate the JSON array from `array_expr`
 2. Deduplicate elements (same as `JSON_SUM_CRC32`)
-3. For each unique element `e`: compute `CRC32(MD5(CONCAT_WS(0x2, prefix_col1, prefix_col2, ..., e)))`
+3. For each unique element `e`: compute `CRC32(MD5(CONCAT_WS(0x2, prefix_string, e)))`
 4. XOR all per-element CRC32s together
 5. Return the result as UNSIGNED INT
 
-**Why not reuse JSON_SUM_CRC32**: The current function only takes the array — it doesn't include handle columns in the per-element CRC. For BIT_XOR to work, the handle must be baked into each element's CRC (since we can't use multiplication to separate them).
+**Why prefix must include non-array cols**: Without them, corruption in non-array index columns would produce identical checksums on both sides and go undetected. For example, if MV index `(a, CAST(j AS UNSIGNED ARRAY))` has `a` corrupted from 10 to 99, only including `a` in the per-element CRC will catch it.
+
+**Why not reuse JSON_SUM_CRC32**: The current function only takes the array — it doesn't include handle/non-array columns in the per-element CRC. For BIT_XOR to work, these must be baked into each element's CRC (since we can't use multiplication to separate them, unlike the SUM approach).
 
 ## SQL Changes
 
@@ -52,7 +59,7 @@ FROM t USE INDEX() WHERE filter AND whereKey = 0 GROUP BY bucket
 
 **Table side** (Phase C):
 ```sql
-SELECT BIT_XOR(JSON_ARRAY_XOR_CRC32(array_expr, handle_cols, non_array_cols)), bucket, COUNT(*)
+SELECT BIT_XOR(JSON_ARRAY_XOR_CRC32(array_expr, CONCAT_WS(0x2, handle_cols, non_array_cols))), bucket, COUNT(*)
 FROM t USE INDEX() WHERE filter AND whereKey = 0 GROUP BY bucket
 ```
 
@@ -89,7 +96,7 @@ type mvXorCheckBuilder struct {
 ```
 
 - `handleChecksum()`: Same as `normalCheckBuilder` — `CRC32(MD5(CONCAT_WS(handle_cols)))` (no non-array cols needed here since they're in the per-entry CRC now).
-- `buildChecksumQuery()`: Uses `BIT_XOR(JSON_ARRAY_XOR_CRC32(...))` on table side, `BIT_XOR(CRC32(MD5(CONCAT_WS(...))))` on index side.
+- `buildChecksumQuery()`: Uses `BIT_XOR(JSON_ARRAY_XOR_CRC32(array, CONCAT_WS(0x2, handle, non_array)))` on table side, `BIT_XOR(CRC32(MD5(CONCAT_WS(0x2, handle, non_array, element))))` on index side.
 - `buildCheckRowQuery()`: Table side uses `JSON_ARRAY_XOR_CRC32` per row; index side GROUPs BY handle with `BIT_XOR`.
 - `getRecords()`: Same as `mvCheckBuilder`.
 
@@ -109,6 +116,6 @@ type mvXorCheckBuilder struct {
 
 ## Trade-offs
 
-- New function (`JSON_ARRAY_XOR_CRC32`) is more complex than `JSON_SUM_CRC32` (needs prefix cols as input)
+- New function (`JSON_ARRAY_XOR_CRC32`) has a different interface than `JSON_SUM_CRC32` (2 params: array + prefix string), but the function itself is simpler (XOR instead of modular SUM)
 - Still can't be pushed to TiKV (same limitation)
 - Parser/expression layer still has one internal-only function (but it's a replacement, not an addition)
