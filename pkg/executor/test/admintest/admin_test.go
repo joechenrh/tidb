@@ -2389,3 +2389,37 @@ func TestAdminCheckMVIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminCheckMVIndexAllTypes(t *testing.T) {
+	store := testkit.CreateMockStore(t)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("set tidb_enable_fast_table_check = 1")
+
+	cases := []struct {
+		name     string
+		castType string
+		values   []string // JSON values to insert
+	}{
+		{"unsigned", "UNSIGNED", []string{`'[1, 2, 3]'`, `'[0]'`, `'[]'`, `NULL`}},
+		{"signed", "SIGNED", []string{`'[-1, 0, 1]'`, `'[2147483647]'`}},
+		{"char", "CHAR(20)", []string{`'["hello", "world"]'`, `'[""]'`, `'[]'`}},
+		{"binary", "BINARY(16)", []string{`'["abc", "def"]'`}},
+		{"double", "DOUBLE", []string{`'[1.0, 2.5, 0.1]'`, `'[0.0]'`}},
+		{"duplicates", "UNSIGNED", []string{`'[1, 1, 2]'`, `'[3, 3, 3]'`}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk.MustExec("DROP TABLE IF EXISTS t")
+			tk.MustExec(fmt.Sprintf(
+				"CREATE TABLE t (id INT PRIMARY KEY, j JSON, INDEX mvi((CAST(j AS %s ARRAY))))",
+				tc.castType))
+			for i, v := range tc.values {
+				tk.MustExec(fmt.Sprintf("INSERT INTO t VALUES (%d, %s)", i+1, v))
+			}
+			// Fast check should pass — no false positives
+			tk.MustExec("ADMIN CHECK TABLE t")
+		})
+	}
+}
