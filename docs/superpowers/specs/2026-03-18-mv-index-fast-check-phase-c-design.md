@@ -114,8 +114,74 @@ type mvXorCheckBuilder struct {
 - Simpler checksum math
 - `handleChecksum()` could potentially be unified between builders
 
+## Type Compatibility
+
+### The Problem
+
+For the checksum to be correct, the string representation of each array element must be **identical** on both sides:
+
+- **Index side**: `CONCAT_WS(0x2, ..., hidden_col)` calls `hidden_col.EvalString()` — TiDB's standard column-to-string conversion.
+- **Table side**: `JSON_ARRAY_XOR_CRC32` extracts a JSON element and converts it to string internally.
+
+If these two paths produce different strings for the same value, we get **false positives** (reporting corruption that doesn't exist).
+
+### The Bug in JSON_SUM_CRC32
+
+The current `JSON_SUM_CRC32` uses a custom `convertJSON2String` function (builtin_json.go:234–305) that has its own conversion logic per type. This is a **different code path** from `EvalString` used by `CRC32()` and `CONCAT_WS()` on the index side. Examples of potential divergence:
+
+| Type | `convertJSON2String` | `EvalString` (index side) | Match? |
+|------|---------------------|--------------------------|--------|
+| ETInt | `strconv.Itoa(int(val))` | standard int-to-string | Likely ✓ |
+| ETReal | `strconv.FormatFloat(val, 'f', -1, digit)` | may use different format | **Risky** |
+| ETString | `ProduceStrWithSpecifiedTp(...)` | direct string | Likely ✓ |
+| ETDatetime | `res.String()` | datetime-to-string | Needs verification |
+| ETDuration | `dur.String()` | duration-to-string | Needs verification |
+
+### The Fix in Phase C
+
+`JSON_ARRAY_XOR_CRC32` must **not** use a custom conversion function. Instead, it should:
+
+1. Extract each JSON array element
+2. Cast to the target type (e.g., `CAST(element AS DOUBLE)`), producing a typed Datum
+3. Call the **same** `Datum.ConvertTo(StringType)` path that `EvalString` uses — this is what `CONCAT_WS` calls internally on the index side
+
+This guarantees string representations match on both sides, **for all types that TiDB supports in CAST(... AS TYPE ARRAY)**.
+
+```go
+// Pseudocode for JSON_ARRAY_XOR_CRC32 element processing:
+for each element in json_array {
+    datum := castJSONElementToTargetType(element, targetFieldType)    // Same CAST as the index definition
+    str := datum.EvalString(ctx)                                      // Same path as CONCAT_WS uses
+    crc := crc32.ChecksumIEEE([]byte(concatWS(separator, prefix, str)))
+    result ^= crc
+}
+```
+
+### Supported Types
+
+With the `EvalString`-based approach, all types that TiDB supports for `CAST(... AS TYPE ARRAY)` should work. The `indexSupportFastCheck` type restriction in builder.go can be relaxed or removed entirely:
+
+- **ETInt**: ✓ safe
+- **ETReal**: ✓ safe (same `EvalString` path on both sides)
+- **ETString**: ✓ safe
+- **ETDatetime**: ✓ safe (same path)
+- **ETDuration**: ✓ safe (same path)
+- **ETDecimal**: ✓ safe (same path — was previously excluded due to `JSON_SUM_CRC32`'s custom conversion, now unified)
+
+### Verification
+
+Each type should have an explicit test case: insert data → admin check table (fast) → should pass without false positives. Edge cases to cover:
+
+- Float: `[1.0, 2.5, 0.1]` (formatting precision)
+- Decimal: `[1.10, 2.00]` (trailing zeros)
+- Datetime: `['2024-01-01 00:00:00']` (with/without time component)
+- Duration: `['12:30:00']` (with/without fractional seconds)
+- Empty array: `[]` (no index entries)
+- NULL JSON (creates one NULL index entry)
+
 ## Trade-offs
 
 - New function (`JSON_ARRAY_XOR_CRC32`) has a different interface than `JSON_SUM_CRC32` (2 params: array + prefix string), but the function itself is simpler (XOR instead of modular SUM)
 - Still can't be pushed to TiKV (same limitation)
 - Parser/expression layer still has one internal-only function (but it's a replacement, not an addition)
+- By using `EvalString` instead of custom conversion, **all CAST ARRAY types become safe** — this is a correctness improvement over the current approach
