@@ -463,21 +463,22 @@ func (pp *ParquetParser) moveToNextRowGroup() error {
 // readSingleRow read one row internally and store them in the row buffer.
 // The data read is shallow copied from the internal buffer of parquet reader,
 // so copy it if you need to keep the data before the next read.
-func (pp *ParquetParser) readSingleRow(row []types.Datum) error {
+func (pp *ParquetParser) readSingleRow(row []types.Datum) (int, error) {
 	// Move to next row group
 	if pp.rowGroup.isDone() {
 		if err := pp.moveToNextRowGroup(); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	if err := pp.rowGroup.readRow(row, pp.skipCast); err != nil {
-		return err
+		return 0, err
 	}
 
-	pp.totalReadBytes += estimateRowSize(row)
+	size := estimateRowSize(row)
+	pp.totalReadBytes += size
 	pp.totalReadRows++
-	return nil
+	return size, nil
 }
 
 // Pos returns the currently row number of the parquet file
@@ -496,7 +497,7 @@ func (pp *ParquetParser) SetPos(pos int64, rowID int64) error {
 	// For now it's ok, since only UTs use this interface
 	toRead := pos - pp.lastRow.RowID
 	for range toRead {
-		if err := pp.readSingleRow(row); err != nil {
+		if _, err := pp.readSingleRow(row); err != nil {
 			return err
 		}
 	}
@@ -539,13 +540,14 @@ func (pp *ParquetParser) ReadRow() error {
 	pp.lastRow.Length = 0
 
 	row := pp.rowPool.Get()
-	if err := pp.readSingleRow(row); err != nil {
+	size, err := pp.readSingleRow(row)
+	if err != nil {
 		pp.rowPool.Put(row)
 		return err
 	}
 
 	pp.lastRow.Row = row
-	pp.lastRow.Length = estimateRowSize(row)
+	pp.lastRow.Length = size
 	pp.lastRow.SkipCast = pp.skipCast
 	return nil
 }
