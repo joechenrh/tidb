@@ -1694,6 +1694,27 @@ func (er *expressionRewriter) Leave(originInNode ast.Node) (retNode ast.Node, ok
 		jsonSumFunction.SetRepertoire(expression.ASCII)
 		er.ctxStack[len(er.ctxStack)-1] = jsonSumFunction
 		er.ctxNameStk[len(er.ctxNameStk)-1] = types.EmptyName
+	case *ast.JSONArrayXorCrc32Expr:
+		if !er.planCtx.builder.ctx.GetSessionVars().InRestrictedSQL {
+			er.err = expression.ErrNotSupportedYet.GenWithStackByArgs("use of JSON_ARRAY_XOR_CRC32 in user query")
+			return retNode, false
+		}
+
+		// Stack: [..., arrayExpr, prefixExpr] (Accept visits Expr first, then Prefix)
+		prefixExpr := er.ctxStack[len(er.ctxStack)-1]
+		arrayExpr := er.ctxStack[len(er.ctxStack)-2]
+		er.ctxStack = er.ctxStack[:len(er.ctxStack)-2]
+		er.ctxNameStk = er.ctxNameStk[:len(er.ctxNameStk)-2]
+		targetTp := v.Tp.DeepCopy()
+		jsonArrayXorFunction, err := expression.BuildJSONArrayXorCrc32FunctionWithCheck(er.sctx, arrayExpr, prefixExpr, targetTp)
+		if err != nil {
+			er.err = err
+			return retNode, false
+		}
+
+		jsonArrayXorFunction.SetCoercibility(expression.CoercibilityNumeric)
+		jsonArrayXorFunction.SetRepertoire(expression.ASCII)
+		er.ctxStackAppend(jsonArrayXorFunction, types.EmptyName)
 	case *ast.PatternLikeOrIlikeExpr:
 		er.patternLikeOrIlikeToExpression(v)
 	case *ast.PatternRegexpExpr:
