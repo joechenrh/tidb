@@ -51,6 +51,12 @@ type TableKVEncoder struct {
 	// currentSkipCast holds the per-file-column skip-cast decisions for the
 	// row currently being encoded. Set at the start of each Encode call.
 	currentSkipCast []bool
+
+	// Pre-classified column indices for buildRecord.
+	// Computed once in initBuildRecordMeta.
+	defaultColOffsets []int  // table-column offsets for columns that get defaults (not insert, not special)
+	specialColOffsets []int  // table-column offsets for auto-inc, auto-random, generated columns
+	notNullFlags      []bool // per-column NOT NULL flag cache (indexed by table-column offset)
 }
 
 // NewTableKVEncoder creates a new TableKVEncoder.
@@ -93,6 +99,7 @@ func newTableKVEncoderInner(
 		insertColumns:     insertColumns,
 	}
 	enc.initInsertColFileMapping()
+	enc.initBuildRecordMeta()
 	return enc, nil
 }
 
@@ -188,8 +195,7 @@ func (en *TableKVEncoder) parserData2TableData(parserData []types.Datum, rowID i
 		row = append(row, d)
 	}
 
-	// a new row buffer will be allocated in getRow
-	newRow, err := en.getRow(row, hasValue, rowID)
+	newRow, err := en.buildRecord(row, hasValue, rowID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,62 +203,93 @@ func (en *TableKVEncoder) parserData2TableData(parserData []types.Datum, rowID i
 	return newRow, nil
 }
 
-// getRow gets the row which from `insert into select from` or `load data`.
-// The input values from these two statements are datums instead of
-// expressions which are used in `insert into set x=y`.
-// copied from InsertValues
-func (en *TableKVEncoder) getRow(vals []types.Datum, hasValue []bool, rowID int64) ([]types.Datum, error) {
-	row := en.rowCache
-	for i := range en.insertColumns {
-		offset := en.insertColumns[i].Offset
+// buildRecord produces a complete table record from insert-column values,
+// applying defaults for missing columns and special handling for auto-inc/
+// auto-random/generated columns. It replaces the former getRow+fillRow
+// two-pass approach with a single pass.
+//
+// TODO(optimize-encoding): For type-compatible columns, consider bypassing the Datum layer
+// entirely and encoding parquet native values directly into rowcodec bytes. This would
+// eliminate the setter -> Datum -> CastColumnValue -> addRecord -> AddColVal -> encodeValueDatum
+// chain. See docs/superpowers/specs/2026-03-19-optimize-encoding-v4-design.md Future Work.
+func (en *TableKVEncoder) buildRecord(vals []types.Datum, hasValue []bool, rowID int64) ([]types.Datum, error) {
+	record := en.GetOrCreateRecord()[:len(en.Columns)]
+	exprCtx := en.SessionCtx.GetExprCtx()
+	errCtx := exprCtx.GetEvalCtx().ErrCtx()
+
+	// Insert columns — apply skipCast or CastColumnValue.
+	for i, col := range en.insertColumns {
+		offset := col.Offset
 		if en.canSkipCastColumnValue(i) {
-			row[offset] = vals[i]
+			record[offset] = vals[i]
+		} else {
+			casted, err := table.CastColumnValue(exprCtx, vals[i], col.ToInfo(), false, false)
+			if err != nil {
+				return nil, en.LogKVConvertFailed(vals, i, col.ToInfo(), err)
+			}
+			record[offset] = casted
+		}
+	}
+
+	// Default columns — not insert, not special.
+	for _, i := range en.defaultColOffsets {
+		col := en.Columns[i]
+		if hasValue[i] {
+			// Value was set by parserData2TableData (e.g., SET clause assignment).
+			// Still need NOT-NULL check matching original ProcessColDatum behavior.
+			value := en.rowCache[i]
+			if err := col.CheckNotNull(&value, 0); err != nil {
+				// Value is null for a NOT-NULL column — handle bad null.
+				if err2 := col.HandleBadNull(errCtx, &value, 0); err2 != nil {
+					return nil, en.LogKVConvertFailed(en.rowCache, i, col.ToInfo(), err2)
+				}
+			}
+			record[i] = value
 			continue
 		}
-		casted, err := table.CastColumnValue(en.SessionCtx.GetExprCtx(), vals[i], en.insertColumns[i].ToInfo(), false, false)
+		value, err := table.GetColDefaultValue(exprCtx, col.ToInfo())
 		if err != nil {
-			return nil, en.LogKVConvertFailed(vals, i, en.insertColumns[i].ToInfo(), err)
+			return nil, en.LogKVConvertFailed(en.rowCache, i, col.ToInfo(), err)
 		}
-		row[offset] = casted
+		if value.IsNull() && en.notNullFlags[i] {
+			if err := col.HandleBadNull(errCtx, &value, 0); err != nil {
+				return nil, en.LogKVConvertFailed(en.rowCache, i, col.ToInfo(), err)
+			}
+		}
+		record[i] = value
 	}
 
-	return en.fillRow(row, hasValue, rowID)
-}
-
-func (en *TableKVEncoder) fillRow(row []types.Datum, hasValue []bool, rowID int64) ([]types.Datum, error) {
-	var value types.Datum
-	var err error
-
-	record := en.GetOrCreateRecord()
-	for i, col := range en.Columns {
+	// Special columns — auto-inc, auto-random, generated.
+	for _, i := range en.specialColOffsets {
+		col := en.Columns[i]
 		var theDatum *types.Datum
-		doCast := true
 		if hasValue[i] {
-			theDatum = &row[i]
-			doCast = false
+			theDatum = &en.rowCache[i]
 		}
-		value, err = en.ProcessColDatum(col, rowID, theDatum, doCast)
+		// needCast=false: the value (if any) was already set by parserData2TableData.
+		// ProcessColDatum still does CheckNotNull and auto-value handling.
+		value, err := en.ProcessColDatum(col, rowID, theDatum, false)
 		if err != nil {
-			return nil, en.LogKVConvertFailed(row, i, col.ToInfo(), err)
+			return nil, en.LogKVConvertFailed(en.rowCache, i, col.ToInfo(), err)
 		}
-
-		record = append(record, value)
+		record[i] = value
 	}
 
+	// Handle auto row ID.
 	if common.TableHasAutoRowID(en.TableMeta()) {
 		rowValue := rowID
 		newRowID := en.AutoIDFn(rowID)
-		value = types.NewIntDatum(newRowID)
-		record = append(record, value)
+		record = append(record, types.NewIntDatum(newRowID))
 		alloc := en.TableAllocators().Get(autoid.RowIDAllocType)
 		if err := alloc.Rebase(context.Background(), rowValue, false); err != nil {
 			return nil, errors.Trace(err)
 		}
 	}
 
+	// Evaluate generated columns.
 	if len(en.GenCols) > 0 {
 		if errCol, err := en.EvalGeneratedColumns(record, en.Columns); err != nil {
-			return nil, en.LogEvalGenExprFailed(row, errCol, err)
+			return nil, en.LogEvalGenExprFailed(en.rowCache, errCol, err)
 		}
 	}
 
@@ -276,6 +313,33 @@ func (en *TableKVEncoder) initInsertColFileMapping() {
 	// SET clause columns have no file column
 	for ; insertIdx < len(en.insertColToFileIdx); insertIdx++ {
 		en.insertColToFileIdx[insertIdx] = -1
+	}
+}
+
+func (en *TableKVEncoder) initBuildRecordMeta() {
+	numCols := len(en.Columns)
+
+	hasInsertValue := make([]bool, numCols)
+	for _, col := range en.insertColumns {
+		hasInsertValue[col.Offset] = true
+	}
+
+	en.notNullFlags = make([]bool, numCols)
+	for i, col := range en.Columns {
+		en.notNullFlags[i] = mysql.HasNotNullFlag(col.GetFlag())
+	}
+
+	en.defaultColOffsets = make([]int, 0)
+	en.specialColOffsets = make([]int, 0)
+	for i, col := range en.Columns {
+		if hasInsertValue[i] {
+			continue
+		}
+		if kv.IsAutoIncCol(col.ToInfo()) || en.IsAutoRandomCol(col.ToInfo()) || col.IsGenerated() {
+			en.specialColOffsets = append(en.specialColOffsets, i)
+		} else {
+			en.defaultColOffsets = append(en.defaultColOffsets, i)
+		}
 	}
 }
 
