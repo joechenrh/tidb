@@ -327,7 +327,7 @@ func (b *builtinJSONArrayXorCRC32Sig) evalInt(ctx EvalContext, row chunk.Row) (r
 		return 0, false, ErrNotSupportedYet.GenWithStackByArgs(fmt.Sprintf("calculating xor crc32 of %s", ft.String()))
 	}
 
-	seen := make(map[uint32]struct{}, val.GetElemCount())
+	seen := make(map[string]struct{}, val.GetElemCount())
 	var result uint32
 
 	for i := range val.GetElemCount() {
@@ -344,8 +344,8 @@ func (b *builtinJSONArrayXorCRC32Sig) evalInt(ctx EvalContext, row chunk.Row) (r
 		hexStr := fmt.Sprintf("%x", hash)
 		crc := crc32.ChecksumIEEE([]byte(hexStr))
 
-		if _, ok := seen[crc]; !ok {
-			seen[crc] = struct{}{}
+		if _, ok := seen[str]; !ok {
+			seen[str] = struct{}{}
 			result ^= crc
 		}
 	}

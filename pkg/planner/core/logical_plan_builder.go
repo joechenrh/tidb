@@ -4583,15 +4583,15 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		return nil, err
 	}
 
+	tbl, err = tryLockMDLAndUpdateSchemaIfNecessary(ctx, b.ctx, dbName, tbl, b.is)
+	if err != nil {
+		return nil, err
+	}
+
 	if kv.GetInternalSourceType(ctx) == kv.InternalTxnAdmin {
 		if tbl, err = buildTableForAdminCheckSQL(tbl); err != nil {
 			return nil, err
 		}
-	}
-
-	tbl, err = tryLockMDLAndUpdateSchemaIfNecessary(ctx, b.ctx, dbName, tbl, b.is)
-	if err != nil {
-		return nil, err
 	}
 	tableInfo := tbl.Meta()
 

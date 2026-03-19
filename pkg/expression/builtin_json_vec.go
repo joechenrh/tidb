@@ -975,7 +975,7 @@ func (b *builtinJSONArrayXorCRC32Sig) vecEvalInt(ctx EvalContext, input *chunk.C
 			return ErrInvalidTypeForJSON.GenWithStackByArgs(1, "JSON_ARRAY_XOR_CRC32")
 		}
 
-		seen := make(map[uint32]struct{}, jsonItem.GetElemCount())
+		seen := make(map[string]struct{}, jsonItem.GetElemCount())
 		var xorResult uint32
 
 		for j := range jsonItem.GetElemCount() {
@@ -991,8 +991,8 @@ func (b *builtinJSONArrayXorCRC32Sig) vecEvalInt(ctx EvalContext, input *chunk.C
 			hexStr := fmt.Sprintf("%x", hash)
 			crc := crc32.ChecksumIEEE([]byte(hexStr))
 
-			if _, ok := seen[crc]; !ok {
-				seen[crc] = struct{}{}
+			if _, ok := seen[item]; !ok {
+				seen[item] = struct{}{}
 				xorResult ^= crc
 			}
 		}

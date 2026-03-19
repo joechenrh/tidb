@@ -486,13 +486,14 @@ func (b *mvXorCheckBuilder) buildChecksumQuery(groupByKey, whereKey string) (str
 	for _, col := range b.idxInfo.Columns {
 		tblCol := b.tblInfo.Columns[col.Offset]
 		rawExpr := ExtractCastArrayExpr(tblCol)
-		generatedExpr := strings.ToLower(tblCol.GeneratedExprString)
+		generatedExpr := tblCol.GeneratedExprString
 		colName := ColumnName(col.Name.O)
 
 		if len(rawExpr) > 0 {
 			tableFilterCol = fmt.Sprintf("(JSON_LENGTH(%s) > 0 or JSON_LENGTH(%s) is null)", rawExpr, rawExpr)
 			// generatedExpr is "cast(X as TYPE array)"; strip outer "cast" to get "(X as TYPE array)"
-			// then build "JSON_ARRAY_XOR_CRC32(X as TYPE array, prefix)"
+			// then build "JSON_ARRAY_XOR_CRC32(X as TYPE array, prefix)".
+			// Do NOT lowercase generatedExpr: string literal path keys (e.g. '$.myField') are case-sensitive.
 			inner := strings.TrimPrefix(generatedExpr, "cast")
 			inner = strings.TrimSuffix(inner, ")")
 			prefix := fmt.Sprintf("CONCAT_WS(0x2, %s)", strings.Join(prefixCols, ", "))
@@ -542,7 +543,7 @@ func (b *mvXorCheckBuilder) buildCheckRowQuery(groupByKey string) (string, strin
 
 	for _, col := range b.idxInfo.Columns {
 		tblCol := b.tblInfo.Columns[col.Offset]
-		generatedExpr := strings.ToLower(tblCol.GeneratedExprString)
+		generatedExpr := tblCol.GeneratedExprString
 		rawExpr := ExtractCastArrayExpr(tblCol)
 		colName := ColumnName(col.Name.O)
 
@@ -554,9 +555,11 @@ func (b *mvXorCheckBuilder) buildCheckRowQuery(groupByKey string) (string, strin
 			// 1. The raw hidden col for CRC32 in the per-entry checksum (computed in subquery)
 			indexCRC32Cols = append(indexCRC32Cols, colName)
 
-			// 2. Cast-back expression for error reporting via JSON_ARRAYAGG
+			// 2. Cast-back expression for error reporting via JSON_ARRAYAGG.
+			// Remove " array" suffix from the type to get a plain CAST expression on the index side.
+			// Do NOT lowercase generatedExpr: string literal path keys (e.g. '$.myField') are case-sensitive.
 			aliasArray := buildAlias(col.Name, "_array")
-			arrayExpr := strings.Replace(generatedExpr, "array", "", 1)
+			arrayExpr := strings.Replace(generatedExpr, " array", "", 1)
 			arrayExpr = strings.Replace(arrayExpr, rawExpr, colName, 1)
 			arrayExpr = fmt.Sprintf("(%s) as %s", arrayExpr, aliasArray)
 			indexSubqueryCols = append(indexSubqueryCols, arrayExpr)
@@ -573,7 +576,8 @@ func (b *mvXorCheckBuilder) buildCheckRowQuery(groupByKey string) (string, strin
 	}
 
 	// Table side checksum: JSON_ARRAY_XOR_CRC32(array_expr, CONCAT_WS(0x2, handle, non_array))
-	inner := strings.TrimPrefix(strings.ToLower(b.tblInfo.Columns[b.idxInfo.Columns[b.arrayColIdx()].Offset].GeneratedExprString), "cast")
+	// Do NOT lowercase the generated expression: string literal path keys (e.g. '$.myField') are case-sensitive.
+	inner := strings.TrimPrefix(b.tblInfo.Columns[b.idxInfo.Columns[b.arrayColIdx()].Offset].GeneratedExprString, "cast")
 	inner = strings.TrimSuffix(inner, ")")
 	prefix := fmt.Sprintf("CONCAT_WS(0x2, %s)", strings.Join(prefixCols, ", "))
 	tableArrayExpr = fmt.Sprintf("JSON_ARRAY_XOR_CRC32%s, %s)", inner, prefix)
@@ -680,6 +684,7 @@ func (w *checkIndexWorker) initSessCtx() (sessionctx.Context, func(), error) {
 		}
 	}
 
+	releaseCtx := kv.WithInternalSourceType(w.e.contextCtx, kv.InternalTxnAdmin)
 	return se, func() {
 		sessVars.OptimizerUseInvisibleIndexes = originOptUseInvisibleIdx
 		sessVars.MemQuotaQuery = originMemQuotaQuery
@@ -690,6 +695,7 @@ func (w *checkIndexWorker) initSessCtx() (sessionctx.Context, func(), error) {
 				logutil.BgLogger().Error("fail to set tidb_snapshot to 0", zap.Error(err))
 			}
 		}
+		w.e.BaseExecutor.ReleaseSysSession(releaseCtx, se)
 	}, nil
 }
 
@@ -981,15 +987,12 @@ func queryToRow(qCtx context.Context, se sessionctx.Context, sql string) ([]chun
 	if err != nil {
 		return nil, err
 	}
-	row, err := sqlexec.DrainRecordSet(qCtx, rs, 4096)
-	if err != nil {
-		return nil, err
-	}
-	err = rs.Close()
-	if err != nil {
-		logutil.BgLogger().Warn("close result set failed", zap.Error(err))
-	}
-	return row, nil
+	defer func() {
+		if err := rs.Close(); err != nil {
+			logutil.BgLogger().Warn("close result set failed", zap.Error(err))
+		}
+	}()
+	return sqlexec.DrainRecordSet(qCtx, rs, 4096)
 }
 
 func getGroupChecksum(ctx context.Context, se sessionctx.Context, sql string) ([]groupByChecksum, error) {

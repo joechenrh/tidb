@@ -2614,6 +2614,12 @@ func TestExtractCastArrayExpr(t *testing.T) {
 func TestAdminCheckMVIndex(t *testing.T) {
 	store, domain := testkit.CreateMockStoreAndDomain(t)
 
+	origBucketSize := executor.CheckTableFastBucketSize.Load()
+	origThreshold := executor.LookupCheckThreshold
+	t.Cleanup(func() {
+		executor.CheckTableFastBucketSize.Store(origBucketSize)
+		executor.LookupCheckThreshold = origThreshold
+	})
 	executor.CheckTableFastBucketSize.Store(4)
 	executor.LookupCheckThreshold = 1
 

@@ -538,6 +538,13 @@ func indexSupportFastCheck(tblInfo *model.TableInfo, idxInfo *model.IndexInfo) b
 		return false
 	}
 
+	// Partial index (with WHERE condition) does not support fast check: the
+	// checksum query would scan all rows, producing mismatches for rows
+	// excluded by the condition.
+	if idxInfo.HasCondition() {
+		return false
+	}
+
 	for _, col := range idxInfo.Columns {
 		// Prefix index does not support fast check.
 		if col.Length != types.UnspecifiedLength {
