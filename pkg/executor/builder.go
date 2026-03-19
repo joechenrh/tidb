@@ -637,12 +637,12 @@ func (b *executorBuilder) buildRecoverIndex(v *plannercore.RecoverIndex) exec.Ex
 	}
 	cols := buildIdxColsConcatHandleCols(tblInfo, index.Meta(), hasGenedCol)
 	e := &RecoverIndexExec{
-		BaseExecutor:     exec.NewBaseExecutor(b.ctx, v.Schema(), v.ID()),
-		columns:          cols,
+		BaseExecutor:                   exec.NewBaseExecutor(b.ctx, v.Schema(), v.ID()),
+		columns:                        cols,
 		containsGenedColOrPartialIndex: hasGenedCol,
-		index:            index,
-		table:            t,
-		physicalID:       t.Meta().ID,
+		index:                          index,
+		table:                          t,
+		physicalID:                     t.Meta().ID,
 	}
 	e.handleCols = buildHandleColsForExec(tblInfo, e.columns)
 	return e
