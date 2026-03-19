@@ -45,14 +45,15 @@ The prefix is pre-computed in SQL:
 JSON_ARRAY_XOR_CRC32(array_expr, CONCAT_WS(0x2, handle_cols, non_array_cols))
 ```
 
+The target type for casting (e.g., DOUBLE, CHAR(10)) is carried in the function class metadata (same pattern as `JSON_SUM_CRC32`), not as an SQL argument. The builder constructs this from `tblCol.FieldType.ArrayType()`.
+
 **Semantics**:
 1. Evaluate `array_expr` as a JSON array
-2. Deduplicate elements (same as `JSON_SUM_CRC32`)
-3. For each unique element `e`:
-   a. Cast `e` to the target type (e.g., `CAST(e AS DOUBLE)`) — producing a typed Datum
-   b. Convert to string via `Datum.EvalString()` — the **same path** that `CONCAT_WS` uses on the index side
-   c. Compute `CRC32(MD5(CONCAT_WS(0x2, prefix_string, str)))`
-4. XOR all per-element CRC32s together
+2. If `array_expr` is NULL: return `CRC32(MD5(prefix_string))` — matches the index-side behavior where `CONCAT_WS(0x2, prefix, NULL)` skips the NULL argument, leaving only the prefix
+3. For each element `e`:
+   a. Cast `e` to the target type via the expression framework's cast functions (e.g., `builtinCastRealAsStringSig` for DOUBLE) — this is the **same code path** that `CONCAT_WS` uses on the index side when implicitly casting column values to string
+   b. Compute `CRC32(MD5(CONCAT_WS(0x2, prefix_string, str)))`
+4. Deduplicate by CRC32 result, then XOR all unique CRC32s together (dedup must happen after casting, because different JSON representations like int `1` and float `1.0` may produce the same cast result — matching index dedup semantics)
 5. Return the result as UNSIGNED INT
 
 ### Type Safety: Why EvalString Matters
@@ -70,12 +71,18 @@ The checksum is correct only when the table-side and index-side string represent
 `JSON_ARRAY_XOR_CRC32` fixes this by using `EvalString` for all types:
 
 ```go
-// Pseudocode for element processing:
+// Pseudocode for element processing.
+// Key: use expression framework's cast functions, NOT a custom conversion.
 for each element in json_array {
-    datum := castJSONElementToTargetType(element, targetFieldType)
-    str := datum.EvalString(ctx)  // Same code path as CONCAT_WS on index side
+    // Build and evaluate: CAST(CAST(element AS targetType) AS STRING)
+    // This goes through builtinCastXXXAsStringSig (e.g., builtinCastRealAsStringSig
+    // for DOUBLE), the same code path CONCAT_WS uses on the index side.
+    castExpr := expression.BuildCastFunction(ctx, jsonElementExpr, targetFieldType)
+    strExpr := expression.BuildCastFunction(ctx, castExpr, stringFieldType)
+    str, _, _ := strExpr.EvalString(ctx, row)
+
     crc := crc32.ChecksumIEEE([]byte(CONCAT_WS(0x2, prefix, str)))
-    result ^= crc
+    result ^= crc  // dedup by CRC value, then XOR unique CRCs
 }
 ```
 
@@ -103,6 +110,8 @@ WHERE whereKey = 0
 GROUP BY bucket
 ```
 
+**Note on COUNT(*)**: For MV indexes, COUNT(*) differs between table side (one row per handle) and index side (N entries per handle). The algorithm only uses count for drill-down termination (`tableRowCntToCheck`), not for correctness checks.
+
 ### Detail (Check Row) Phase
 
 **Table side**: `JSON_ARRAY_XOR_CRC32` per row as the checksum column, ordered by handle.
@@ -113,7 +122,7 @@ GROUP BY bucket
 
 New builder implementing `indexCheckBuilder`, replacing `mvCheckBuilder`:
 
-- `handleChecksum()`: `CRC32(MD5(CONCAT_WS(handle_cols)))` — same as `normalCheckBuilder` (non-array cols are now in the per-entry CRC, not in the bucketing expression)
+- `handleChecksum()`: `CRC32(MD5(CONCAT_WS(handle_cols)))` — same as `normalCheckBuilder`. **Note**: unlike `mvCheckBuilder`, this uses only handle columns (not non-array index columns), because non-array columns are now included in the per-entry CRC instead.
 - `buildChecksumQuery()`: table side uses `BIT_XOR(JSON_ARRAY_XOR_CRC32(...))`, index side uses `BIT_XOR(CRC32(MD5(CONCAT_WS(...))))`
 - `buildCheckRowQuery()`: table side uses `JSON_ARRAY_XOR_CRC32` per row; index side uses subquery + GROUP BY handle
 - `getRecords()`: same as current `mvCheckBuilder`
