@@ -612,6 +612,183 @@ func (b *mvCheckBuilder) getRecords(ctx context.Context, se sessionctx.Context, 
 	return getRecordWithChecksum(ctx, se, sql, b.tblInfo.IsCommonHandle, b.pkTypes, b.indexColTypes())
 }
 
+// mvXorCheckBuilder generates BIT_XOR-based checksum SQL for multi-valued indexes.
+// It uses JSON_ARRAY_XOR_CRC32 on the table side and BIT_XOR(CRC32(MD5(...))) on
+// the index side, unifying the aggregation method with normalCheckBuilder.
+type mvXorCheckBuilder struct {
+	tblName    string
+	handleCols []string
+	pkTypes    []*types.FieldType
+	idxInfo    *model.IndexInfo
+	tblInfo    *model.TableInfo
+}
+
+// handleChecksum returns the CRC32 expression over handle columns only, used for bucketing.
+// Unlike mvCheckBuilder, non-array index columns are not included here because they are
+// folded into the per-entry CRC.
+func (b *mvXorCheckBuilder) handleChecksum() string {
+	return crc32FromCols(b.handleCols)
+}
+
+// buildChecksumQuery returns complete SQL for the checksum comparison phase.
+// Table side: BIT_XOR(JSON_ARRAY_XOR_CRC32(array_expr, CONCAT_WS(0x2, handle, non_array)))
+// Index side: BIT_XOR(CRC32(MD5(CONCAT_WS(0x2, handle, non_array, hidden_col))))
+func (b *mvXorCheckBuilder) buildChecksumQuery(groupByKey, whereKey string) (string, string) {
+	idxName := ColumnName(b.idxInfo.Name.String())
+
+	var (
+		tableFilterCol string
+		tableArrayExpr string
+		prefixCols     = make([]string, len(b.handleCols))
+		indexCRC32Cols = make([]string, len(b.handleCols))
+	)
+	copy(prefixCols, b.handleCols)
+	copy(indexCRC32Cols, b.handleCols)
+
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		rawExpr := ExtractCastArrayExpr(tblCol)
+		generatedExpr := strings.ToLower(tblCol.GeneratedExprString)
+		colName := ColumnName(col.Name.O)
+
+		if len(rawExpr) > 0 {
+			tableFilterCol = fmt.Sprintf("(JSON_LENGTH(%s) > 0 or JSON_LENGTH(%s) is null)", rawExpr, rawExpr)
+			// generatedExpr is "cast(X as TYPE array)"; strip outer "cast" to get "(X as TYPE array)"
+			// then build "JSON_ARRAY_XOR_CRC32(X as TYPE array, prefix)"
+			inner := strings.TrimPrefix(generatedExpr, "cast")
+			inner = strings.TrimSuffix(inner, ")")
+			prefix := fmt.Sprintf("CONCAT_WS(0x2, %s)", strings.Join(prefixCols, ", "))
+			tableArrayExpr = fmt.Sprintf("JSON_ARRAY_XOR_CRC32%s, %s)", inner, prefix)
+			indexCRC32Cols = append(indexCRC32Cols, colName)
+		} else {
+			prefixCols = append(prefixCols, colName)
+			indexCRC32Cols = append(indexCRC32Cols, colName)
+		}
+	}
+
+	indexCRC32Expr := fmt.Sprintf("CRC32(MD5(CONCAT_WS(0x2, %s)))", strings.Join(indexCRC32Cols, ", "))
+
+	tableSQL := fmt.Sprintf(
+		"SELECT /*+ read_from_storage(tikv[%s]) */ BIT_XOR(%s), %s, COUNT(*) FROM %s USE INDEX() WHERE %s AND %s = 0 GROUP BY %s",
+		b.tblName, tableArrayExpr, groupByKey,
+		b.tblName, tableFilterCol, whereKey, groupByKey,
+	)
+	indexSQL := fmt.Sprintf(
+		"SELECT BIT_XOR(%s), %s, COUNT(*) FROM %s USE INDEX(%s) WHERE %s = 0 GROUP BY %s",
+		indexCRC32Expr, groupByKey, b.tblName, idxName, whereKey, groupByKey,
+	)
+	return tableSQL, indexSQL
+}
+
+// buildCheckRowQuery returns complete SQL for the detail row comparison phase.
+// Table side: per-row JSON_ARRAY_XOR_CRC32 as checksum, ordered by handle.
+// Index side: subquery with GROUP BY handle, BIT_XOR per handle, JSON_ARRAYAGG for array values.
+func (b *mvXorCheckBuilder) buildCheckRowQuery(groupByKey string) (string, string) {
+	idxName := ColumnName(b.idxInfo.Name.String())
+
+	var (
+		tableFilterCol  string
+		tableSelectCols = make([]string, len(b.handleCols))
+		prefixCols      = make([]string, len(b.handleCols))
+		tableArrayExpr  string
+
+		indexSelectCols   = make([]string, len(b.handleCols))
+		indexSubqueryCols = make([]string, len(b.handleCols))
+		indexCRC32Cols    = make([]string, len(b.handleCols))
+	)
+	copy(tableSelectCols, b.handleCols)
+	copy(prefixCols, b.handleCols)
+	copy(indexSelectCols, b.handleCols)
+	copy(indexSubqueryCols, b.handleCols)
+	copy(indexCRC32Cols, b.handleCols)
+
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		generatedExpr := strings.ToLower(tblCol.GeneratedExprString)
+		rawExpr := ExtractCastArrayExpr(tblCol)
+		colName := ColumnName(col.Name.O)
+
+		if len(rawExpr) > 0 {
+			tableFilterCol = fmt.Sprintf("(JSON_LENGTH(%s) > 0 or JSON_LENGTH(%s) is null)", rawExpr, rawExpr)
+			tableSelectCols = append(tableSelectCols, rawExpr)
+
+			// Index subquery: CRC32 of hidden col and cast-back to array element type for reporting.
+			alias := buildAlias(col.Name, "")
+			indexSubqueryCols = append(indexSubqueryCols, fmt.Sprintf("CRC32(%s) as %s", colName, alias))
+			indexCRC32Cols = append(indexCRC32Cols, colName)
+
+			aliasArray := buildAlias(col.Name, "_array")
+			arrayExpr := strings.Replace(generatedExpr, "array", "", 1)
+			arrayExpr = strings.Replace(arrayExpr, rawExpr, colName, 1)
+			arrayExpr = fmt.Sprintf("(%s) as %s", arrayExpr, aliasArray)
+			indexSubqueryCols = append(indexSubqueryCols, arrayExpr)
+			indexSelectCols = append(indexSelectCols, fmt.Sprintf("JSON_ARRAYAGG(%s)", aliasArray))
+		} else {
+			tableSelectCols = append(tableSelectCols, colName)
+			prefixCols = append(prefixCols, colName)
+
+			alias := buildAlias(col.Name, "")
+			indexSubqueryCols = append(indexSubqueryCols, fmt.Sprintf("%s AS %s", colName, alias))
+			indexSelectCols = append(indexSelectCols, fmt.Sprintf("MIN(%s)", alias))
+			indexCRC32Cols = append(indexCRC32Cols, colName)
+		}
+	}
+
+	// Table side checksum: JSON_ARRAY_XOR_CRC32(array_expr, CONCAT_WS(0x2, handle, non_array))
+	inner := strings.TrimPrefix(strings.ToLower(b.tblInfo.Columns[b.idxInfo.Columns[b.arrayColIdx()].Offset].GeneratedExprString), "cast")
+	inner = strings.TrimSuffix(inner, ")")
+	prefix := fmt.Sprintf("CONCAT_WS(0x2, %s)", strings.Join(prefixCols, ", "))
+	tableArrayExpr = fmt.Sprintf("JSON_ARRAY_XOR_CRC32%s, %s)", inner, prefix)
+
+	// Index side checksum: BIT_XOR(CRC32(MD5(CONCAT_WS(0x2, handle, non_array, hidden_col)))) per handle
+	indexCRC32Expr := fmt.Sprintf("BIT_XOR(CRC32(MD5(CONCAT_WS(0x2, %s))))", strings.Join(indexCRC32Cols, ", "))
+
+	handleColsStr := strings.Join(b.handleCols, ", ")
+
+	tableSQL := fmt.Sprintf(
+		"SELECT /*+ read_from_storage(tikv[%s]) */ %s, %s FROM %s USE INDEX() WHERE %s AND %s = 0 ORDER BY %s",
+		b.tblName, strings.Join(tableSelectCols, ", "), tableArrayExpr,
+		b.tblName, tableFilterCol, groupByKey, handleColsStr,
+	)
+	indexSQL := fmt.Sprintf(
+		"SELECT %s, %s FROM (SELECT %s FROM %s USE INDEX(%s) WHERE %s = 0) tmp GROUP BY %s ORDER BY %s",
+		strings.Join(indexSelectCols, ", "), indexCRC32Expr,
+		strings.Join(indexSubqueryCols, ", "), b.tblName,
+		idxName, groupByKey, handleColsStr, handleColsStr,
+	)
+	return tableSQL, indexSQL
+}
+
+// arrayColIdx returns the index of the array column in idxInfo.Columns.
+func (b *mvXorCheckBuilder) arrayColIdx() int {
+	for i, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		if len(ExtractCastArrayExpr(tblCol)) > 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// indexColTypes builds field types for MV index columns. Array columns are mapped to TypeJSON.
+func (b *mvXorCheckBuilder) indexColTypes() []*types.FieldType {
+	colTypes := make([]*types.FieldType, 0, len(b.idxInfo.Columns))
+	for _, col := range b.idxInfo.Columns {
+		tblCol := b.tblInfo.Columns[col.Offset]
+		if len(ExtractCastArrayExpr(tblCol)) > 0 {
+			colTypes = append(colTypes, types.NewFieldType(mysql.TypeJSON))
+		} else {
+			colTypes = append(colTypes, &tblCol.FieldType)
+		}
+	}
+	return colTypes
+}
+
+// getRecords parses query results into records with checksums for row comparison.
+func (b *mvXorCheckBuilder) getRecords(ctx context.Context, se sessionctx.Context, sql string) ([]*recordWithChecksum, error) {
+	return getRecordWithChecksum(ctx, se, sql, b.tblInfo.IsCommonHandle, b.pkTypes, b.indexColTypes())
+}
+
 // newIndexCheckBuilder creates the appropriate indexCheckBuilder for the given index.
 // For MV indexes, it returns an mvCheckBuilder; for normal indexes, a normalCheckBuilder.
 func newIndexCheckBuilder(tblName string, handleCols []string, pkTypes []*types.FieldType,
