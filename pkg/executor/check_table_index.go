@@ -21,8 +21,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
@@ -246,7 +244,10 @@ func (e *CheckTableExec) checkTableRecord(ctx context.Context, idxOffset int) er
 		return err
 	}
 	if e.table.Meta().GetPartitionInfo() == nil {
-		idx := tables.NewIndex(e.table.Meta().ID, e.table.Meta(), idxInfo)
+		idx, err := tables.NewIndex(e.table.Meta().ID, e.table.Meta(), idxInfo)
+		if err != nil {
+			return err
+		}
 		return admin.CheckRecordAndIndex(ctx, e.Ctx(), txn, e.table, idx)
 	}
 
@@ -254,7 +255,10 @@ func (e *CheckTableExec) checkTableRecord(ctx context.Context, idxOffset int) er
 	for _, def := range info.Definitions {
 		pid := def.ID
 		partition := e.table.(table.PartitionedTable).GetPartition(pid)
-		idx := tables.NewIndex(def.ID, e.table.Meta(), idxInfo)
+		idx, err := tables.NewIndex(def.ID, e.table.Meta(), idxInfo)
+		if err != nil {
+			return errors.Trace(err)
+		}
 		if err := admin.CheckRecordAndIndex(ctx, e.Ctx(), txn, partition, idx); err != nil {
 			return errors.Trace(err)
 		}
@@ -273,8 +277,6 @@ type FastCheckTableExec struct {
 	table      table.Table
 	indexInfos []*model.IndexInfo
 	done       bool
-	err        *atomic.Pointer[error]
-	wg         sync.WaitGroup
 	contextCtx context.Context
 }
 
@@ -304,23 +306,21 @@ func (e *FastCheckTableExec) Next(ctx context.Context, _ *chunk.Chunk) error {
 		e.Ctx().GetSessionVars().OptimizerUseInvisibleIndexes = false
 	}()
 
+	taskCh := make(chan checkIndexTask, len(e.indexInfos))
 	workerPool := workerpool.NewWorkerPool("checkIndex",
 		poolutil.CheckTable, 3, e.createWorker)
-	workerPool.Start(ctx)
+	workerPool.SetTaskReceiver(taskCh)
 
-	e.wg.Add(len(e.indexInfos))
+	wctx := workerpool.NewContext(ctx)
+	workerPool.Start(wctx)
+
 	for i := range e.indexInfos {
-		workerPool.AddTask(checkIndexTask{indexOffset: i, err: e.err})
+		taskCh <- checkIndexTask{indexOffset: i}
 	}
+	close(taskCh)
+	workerPool.Release()
 
-	e.wg.Wait()
-	workerPool.ReleaseAndWait()
-
-	p := e.err.Load()
-	if p == nil {
-		return nil
-	}
-	return *p
+	return wctx.OperatorErr()
 }
 
 func (e *FastCheckTableExec) createWorker() workerpool.Worker[checkIndexTask, workerpool.None] {
@@ -722,15 +722,12 @@ func (w *checkIndexWorker) getReporter(indexOffset int) *consistency.Reporter {
 	}
 }
 
-func (w *checkIndexWorker) HandleTask(task checkIndexTask, _ func(workerpool.None)) {
-	if err := w.handleTask(task); err != nil {
-		w.e.err.CompareAndSwap(nil, &err)
-	}
+// HandleTask implements the Worker interface.
+func (w *checkIndexWorker) HandleTask(task checkIndexTask, _ func(workerpool.None)) error {
+	return w.handleTask(task)
 }
 
-// HandleTask implements the Worker interface.
 func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
-	defer w.e.wg.Done()
 
 	ctx := kv.WithInternalSourceType(w.e.contextCtx, kv.InternalTxnAdmin)
 	se, restoreCtx, err := w.initSessCtx()
@@ -911,19 +908,17 @@ func (w *checkIndexWorker) handleTask(task checkIndexTask) error {
 }
 
 // Close implements the Worker interface.
-func (*checkIndexWorker) Close() {}
+func (*checkIndexWorker) Close() error {
+	return nil
+}
 
 type checkIndexTask struct {
 	indexOffset int
-	err         *atomic.Pointer[error]
 }
 
 // RecoverArgs implements workerpool.TaskMayPanic interface.
-func (c checkIndexTask) RecoverArgs() (metricsLabel string, funcInfo string, recoverFn func(), quit bool) {
-	return "fast_check_table", "RecoverArgs", func() {
-		err := errors.Errorf("checkIndexTask panicked, indexOffset: %d", c.indexOffset)
-		c.err.CompareAndSwap(nil, &err)
-	}, false
+func (c checkIndexTask) RecoverArgs() (metricsLabel string, funcInfo string, err error) {
+	return "fast_check_table", "RecoverArgs", errors.Errorf("checkIndexTask panicked, indexOffset: %d", c.indexOffset)
 }
 
 type groupByChecksum struct {
