@@ -770,6 +770,7 @@ func getMaskingPolicyRestrictOp(name string) (ast.MaskingPolicyRestrictOps, bool
 	jsonArrayagg          "JSON_ARRAYAGG"
 	jsonObjectAgg         "JSON_OBJECTAGG"
 	jsonSumCrc32          "JSON_SUM_CRC32"
+	jsonArrayXorCrc32     "JSON_ARRAY_XOR_CRC32"
 	leader                "LEADER"
 	leaderConstraints     "LEADER_CONSTRAINTS"
 	learner               "LEARNER"
@@ -7736,6 +7737,7 @@ NotKeywordToken:
 |	"JSON_OBJECTAGG"
 |	"JSON_ARRAYAGG"
 |	"JSON_SUM_CRC32"
+|	"JSON_ARRAY_XOR_CRC32"
 |	"TLS"
 |	"FOLLOWER"
 |	"FOLLOWERS"
@@ -8474,6 +8476,31 @@ SimpleExpr:
 		$$ = &ast.JSONSumCrc32Expr{
 			Expr:            $3,
 			Tp:              tp,
+			ExplicitCharSet: explicitCharset,
+		}
+	}
+|	jsonArrayXorCrc32 '(' Expression "AS" CastType "ARRAY" ',' Expression ')'
+	{
+		/* Copied from JSON_SUM_CRC32, except that a second argument (prefix) is added */
+		tp := $5.(*types.FieldType)
+		defaultFlen, defaultDecimal := mysql.GetDefaultFieldLengthAndDecimalForCast(tp.GetType())
+		if tp.GetFlen() == types.UnspecifiedLength {
+			tp.SetFlen(defaultFlen)
+		}
+		if tp.GetDecimal() == types.UnspecifiedLength {
+			tp.SetDecimal(defaultDecimal)
+		}
+		tp.SetArray(true)
+		explicitCharset := parser.explicitCharset
+		if !explicitCharset && tp.GetCharset() != charset.CharsetBin {
+			tp.SetCharset(charset.CharsetUTF8MB4)
+			tp.SetCollate(charset.CollationUTF8MB4)
+		}
+		parser.explicitCharset = false
+		$$ = &ast.JSONArrayXorCrc32Expr{
+			Expr:            $3,
+			Tp:              tp,
+			Prefix:          $8,
 			ExplicitCharSet: explicitCharset,
 		}
 	}

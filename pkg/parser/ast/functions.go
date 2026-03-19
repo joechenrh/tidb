@@ -339,6 +339,7 @@ const (
 	JSONMerge         = "json_merge"
 	JSONSet           = "json_set"
 	JSONSumCrc32      = "json_sum_crc32"
+	JSONArrayXorCrc32 = "json_array_xor_crc32"
 	JSONInsert        = "json_insert"
 	JSONReplace       = "json_replace"
 	JSONRemove        = "json_remove"
@@ -662,6 +663,68 @@ func (n *JSONSumCrc32Expr) Accept(v Visitor) (Node, bool) {
 		return n, false
 	}
 	n.Expr = node.(ExprNode)
+	return v.Leave(n)
+}
+
+// JSONArrayXorCrc32Expr is the function to calculate XOR of crc32 values for array in json.
+// It takes 2 arguments: a JSON array expression with CAST type info, and a prefix string expression.
+type JSONArrayXorCrc32Expr struct {
+	funcNode
+	// Expr is the JSON array expression with CAST type info (first arg).
+	Expr ExprNode
+	// Prefix is the prefix string expression (second arg).
+	Prefix ExprNode
+	// Tp is the target FieldType for casting array elements.
+	Tp *types.FieldType
+	// ExplicitCharSet is true when charset is explicitly indicated.
+	ExplicitCharSet bool
+}
+
+// Restore implements Node interface.
+func (n *JSONArrayXorCrc32Expr) Restore(ctx *format.RestoreCtx) error {
+	ctx.WriteKeyWord("JSON_ARRAY_XOR_CRC32")
+	ctx.WritePlain("(")
+	if err := n.Expr.Restore(ctx); err != nil {
+		return errors.Annotatef(err, "An error occurred while restore JSONArrayXorCrc32Expr.Expr")
+	}
+	ctx.WriteKeyWord(" AS ")
+	n.Tp.RestoreAsCastType(ctx, n.ExplicitCharSet)
+	ctx.WritePlain(", ")
+	if err := n.Prefix.Restore(ctx); err != nil {
+		return errors.Annotatef(err, "An error occurred while restore JSONArrayXorCrc32Expr.Prefix")
+	}
+	ctx.WritePlain(")")
+	return nil
+}
+
+// Format the ExprNode into a Writer.
+func (n *JSONArrayXorCrc32Expr) Format(w io.Writer) {
+	fmt.Fprint(w, "JSON_ARRAY_XOR_CRC32(")
+	n.Expr.Format(w)
+	fmt.Fprint(w, " AS ")
+	n.Tp.FormatAsCastType(w, n.ExplicitCharSet)
+	fmt.Fprint(w, ", ")
+	n.Prefix.Format(w)
+	fmt.Fprint(w, ")")
+}
+
+// Accept implements Node Accept interface.
+func (n *JSONArrayXorCrc32Expr) Accept(v Visitor) (Node, bool) {
+	newNode, skipChildren := v.Enter(n)
+	if skipChildren {
+		return v.Leave(newNode)
+	}
+	n = newNode.(*JSONArrayXorCrc32Expr)
+	node, ok := n.Expr.Accept(v)
+	if !ok {
+		return n, false
+	}
+	n.Expr = node.(ExprNode)
+	node, ok = n.Prefix.Accept(v)
+	if !ok {
+		return n, false
+	}
+	n.Prefix = node.(ExprNode)
 	return v.Leave(n)
 }
 

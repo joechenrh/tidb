@@ -498,6 +498,7 @@ var tokenMap = map[string]int{
 	"JSON_ARRAYAGG":                  jsonArrayagg,
 	"JSON_OBJECTAGG":                 jsonObjectAgg,
 	"JSON_SUM_CRC32":                 jsonSumCrc32,
+	"JSON_ARRAY_XOR_CRC32":           jsonArrayXorCrc32,
 	"JSON":                           jsonType,
 	"KEY_BLOCK_SIZE":                 keyBlockSize,
 	"KEY":                            key,
