@@ -112,6 +112,8 @@ type columnIterator[T parquet.ColumnTypes, R innerReader[T]] struct {
 	values         []T
 
 	setter setter[T]
+
+	maxDefLevel int16 // cached from Descriptor().MaxDefinitionLevel()
 }
 
 // newColumnIterator creates a new generic column iterator
@@ -133,6 +135,7 @@ func newColumnIterator[T parquet.ColumnTypes, R innerReader[T]](
 func (it *columnIterator[T, R]) SetReader(colReader file.ColumnChunkReader) {
 	it.baseReader = colReader
 	it.reader, _ = colReader.(R)
+	it.maxDefLevel = colReader.Descriptor().MaxDefinitionLevel()
 }
 
 func (it *columnIterator[T, R]) Close() error {
@@ -177,7 +180,7 @@ func (it *columnIterator[T, R]) Next(d *types.Datum) (bool, error) {
 	defLevel := it.defLevels[it.levelOffset]
 	it.levelOffset++
 
-	if defLevel < it.baseReader.Descriptor().MaxDefinitionLevel() {
+	if defLevel < it.maxDefLevel {
 		d.SetNull()
 		return true, nil
 	}
