@@ -241,7 +241,7 @@ func scalarExprSupportedByTiKV(ctx EvalContext, sf *ScalarFunction) bool {
 		ast.Sysdate, /* ast.StrToDate, */
 
 		// encryption functions.
-		ast.MD5, ast.SHA1, ast.UncompressedLength,
+		ast.MD5, ast.SHA1, ast.SHA2, ast.UncompressedLength,
 
 		ast.Cast,
 
