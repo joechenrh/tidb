@@ -39,6 +39,7 @@ func readAllData(
 	ctx context.Context,
 	store storeapi.Storage,
 	dataFiles, statsFiles []string,
+	cachedReaders []cachedReader,
 	startKey, endKey []byte,
 	startOffsets, endOffsets []uint64,
 	smallBlockBufPool *membuf.Pool,
@@ -75,14 +76,6 @@ func readAllData(
 	}
 	logutil.Logger(ctx).Info("estimated file size of this range group",
 		zap.String("totalSize", units.BytesSize(float64(totalFileSize))))
-	cachedReaders := make([]cachedReader, len(dataFiles))
-	defer func() {
-		for i := range cachedReaders {
-			if closeErr := cachedReaders[i].close(); err == nil && closeErr != nil {
-				err = closeErr
-			}
-		}
-	}()
 
 	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
 	readConn := 32
@@ -138,6 +131,15 @@ func readAllData(
 	}
 	close(taskCh)
 	return eg.Wait()
+}
+
+func closeCachedReaders(cachedReaders []cachedReader) error {
+	for i := range cachedReaders {
+		if err := cachedReaders[i].close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ReadKVFilesAsync reads multiple KV files asynchronously and sends the KV pairs
@@ -400,22 +402,12 @@ func (r *concurrentReader) nextKV(blockBuf *membuf.Buffer) ([]byte, []byte, erro
 func (r *concurrentReader) reserve([]byte, []byte) {}
 
 type cachedReader struct {
-	ctx              context.Context
 	r                fileReader
 	lastIsConcurrent bool
 }
 
 func (cr *cachedReader) canReuse(isConcurrent bool) bool {
-	if isConcurrent || cr.lastIsConcurrent || cr.r == nil {
-		return false
-	}
-
-	select {
-	case <-cr.ctx.Done():
-		return false
-	default:
-		return true
-	}
+	return !isConcurrent && !cr.lastIsConcurrent && cr.r != nil
 }
 
 func (cr *cachedReader) open(
@@ -473,7 +465,6 @@ func (cr *cachedReader) open(
 		return err
 	}
 
-	cr.ctx = ctx
 	cr.lastIsConcurrent = concurrentRead
 	return nil
 }
@@ -483,6 +474,7 @@ func (cr *cachedReader) close() (err error) {
 		err = cr.r.close()
 		cr.r = nil
 	}
+	cr.lastIsConcurrent = false
 	return err
 }
 

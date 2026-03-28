@@ -248,6 +248,7 @@ func NewExternalEngine(
 
 func (e *Engine) loadRangeBatchData(
 	ctx context.Context,
+	cachedReaders []cachedReader,
 	jobKeys [][]byte,
 	startOffsets, endOffsets []uint64,
 	outCh chan<- engineapi.DataAndRanges,
@@ -284,6 +285,7 @@ func (e *Engine) loadRangeBatchData(
 		e.storage,
 		e.dataFiles,
 		e.statsFiles,
+		cachedReaders,
 		startKey,
 		endKey,
 		startOffsets,
@@ -522,6 +524,12 @@ func (e *Engine) LoadIngestData(
 	if err != nil {
 		return errors.Trace(err)
 	}
+	cachedReaders := make([]cachedReader, len(e.dataFiles))
+	defer func() {
+		if closeErr := closeCachedReaders(cachedReaders); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 
 	for start := 0; start < len(e.jobKeys)-1; {
 		currBatchSize = e.handleConcurrencyChange(ctx, currBatchSize)
@@ -529,7 +537,7 @@ func (e *Engine) LoadIngestData(
 		end := min(1+start+currBatchSize, len(e.jobKeys))
 		startOffsets := readRangesPerKey[start][0]
 		endOffsets := readRangesPerKey[end-1][1]
-		err = e.loadRangeBatchData(ctx, e.jobKeys[start:end], startOffsets, endOffsets, outCh)
+		err = e.loadRangeBatchData(ctx, cachedReaders, e.jobKeys[start:end], startOffsets, endOffsets, outCh)
 		if err != nil {
 			return err
 		}

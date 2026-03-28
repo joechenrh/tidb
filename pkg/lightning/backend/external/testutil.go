@@ -75,12 +75,14 @@ func testReadAndCompare(
 		readRanges, err := getReadRangeFromProps(
 			ctx, [][]byte{curStart, curEnd}, statFilesOfGroup, store)
 		require.NoError(t, err)
+		cachedReaders := make([]cachedReader, len(dataFilesOfGroup))
 
 		err = readAllData(
 			ctx,
 			store,
 			dataFilesOfGroup,
 			statFilesOfGroup,
+			cachedReaders,
 			curStart,
 			curEnd,
 			readRanges[0][0],
@@ -90,6 +92,7 @@ func testReadAndCompare(
 			loaded,
 		)
 		require.NoError(t, err)
+		require.NoError(t, closeCachedReaders(cachedReaders))
 		loaded.build(ctx)
 
 		// check kvs sorted

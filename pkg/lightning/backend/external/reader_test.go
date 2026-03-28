@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,11 +29,30 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/common"
 	"github.com/pingcap/tidb/pkg/lightning/membuf"
 	"github.com/pingcap/tidb/pkg/objstore"
+	"github.com/pingcap/tidb/pkg/objstore/objectio"
+	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/size"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/rand"
 )
+
+type countingOpenMemStorage struct {
+	*objstore.MemStorage
+	targetPath string
+	openCount  atomic.Int32
+}
+
+func (s *countingOpenMemStorage) Open(
+	ctx context.Context,
+	path string,
+	o *storeapi.ReaderOption,
+) (objectio.Reader, error) {
+	if path == s.targetPath {
+		s.openCount.Add(1)
+	}
+	return s.MemStorage.Open(ctx, path, o)
+}
 
 func TestReadAllDataBasic(t *testing.T) {
 	seed := time.Now().Unix()
@@ -161,6 +181,7 @@ func TestReadLargeFile(t *testing.T) {
 
 	err = readAllData(
 		ctx, memStore, datas, stats,
+		make([]cachedReader, len(datas)),
 		startKey, endKey,
 		readRanges[0][0],
 		readRanges[1][1],
@@ -169,6 +190,71 @@ func TestReadLargeFile(t *testing.T) {
 	output.build(ctx)
 	require.Equal(t, startKey, output.kvs[0].Key)
 	require.Equal(t, maxKey, output.kvs[len(output.kvs)-1].Key)
+}
+
+func TestReadAllDataReuseSequentialReaderAcrossBatches(t *testing.T) {
+	ctx := context.Background()
+	memStore := objstore.NewMemStorage()
+
+	var summary *WriterSummary
+	w := NewWriterBuilder().
+		SetOnCloseFunc(func(s *WriterSummary) { summary = s }).
+		BuildOneFile(memStore, "/test", "0")
+	w.InitPartSizeAndLogger(ctx, int64(5*size.MB))
+
+	for i := range 5000 {
+		key := []byte(fmt.Sprintf("key%06d", i))
+		require.NoError(t, w.WriteRow(ctx, key, []byte("value")))
+	}
+	require.NoError(t, w.Close(ctx))
+
+	datas, stats := getKVAndStatFiles(summary)
+	require.Len(t, datas, 1)
+
+	store := &countingOpenMemStorage{
+		MemStorage: memStore,
+		targetPath: datas[0],
+	}
+	jobKeys := [][]byte{
+		[]byte("key000000"),
+		[]byte("key002500"),
+		[]byte("key004999"),
+	}
+	readRanges, err := getReadRangeFromProps(ctx, jobKeys, stats, store)
+	require.NoError(t, err)
+
+	smallBlockBufPool := membuf.NewPool(
+		membuf.WithBlockNum(0),
+		membuf.WithBlockSize(smallBlockSize),
+	)
+	largeBlockBufPool := membuf.NewPool(
+		membuf.WithBlockNum(0),
+		membuf.WithBlockSize(ConcurrentReaderBufferSizePerConc),
+	)
+	cachedReaders := make([]cachedReader, len(datas))
+	defer func() {
+		require.NoError(t, closeCachedReaders(cachedReaders))
+	}()
+
+	firstOutput := &memKVsAndBuffers{}
+	err = readAllData(
+		ctx, store, datas, stats, cachedReaders,
+		jobKeys[0], jobKeys[1],
+		readRanges[0][0], readRanges[1][1],
+		smallBlockBufPool, largeBlockBufPool, firstOutput,
+	)
+	require.NoError(t, err)
+
+	secondOutput := &memKVsAndBuffers{}
+	err = readAllData(
+		ctx, store, datas, stats, cachedReaders,
+		jobKeys[1], jobKeys[2],
+		readRanges[1][0], readRanges[2][1],
+		smallBlockBufPool, largeBlockBufPool, secondOutput,
+	)
+	require.NoError(t, err)
+
+	require.EqualValues(t, 1, store.openCount.Load())
 }
 
 func TestReadKVFilesAsync(t *testing.T) {

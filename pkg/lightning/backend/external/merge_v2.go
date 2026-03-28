@@ -134,12 +134,14 @@ func MergeOverlappingFilesV2(
 		if err != nil {
 			return err
 		}
+		cachedReaders := make([]cachedReader, len(dataFilesOfGroup))
 
 		err1 = readAllData(
 			ctx,
 			store,
 			dataFilesOfGroup,
 			statFilesOfGroup,
+			cachedReaders,
 			curStart,
 			curEnd,
 			readRanges[0][0],
@@ -150,6 +152,10 @@ func MergeOverlappingFilesV2(
 		)
 		if err1 != nil {
 			logutil.Logger(ctx).Warn("read all data failed", zap.Error(err1))
+			return
+		}
+		if err1 = closeCachedReaders(cachedReaders); err1 != nil {
+			logutil.Logger(ctx).Warn("close cached readers failed", zap.Error(err1))
 			return
 		}
 		loaded.build(ctx)

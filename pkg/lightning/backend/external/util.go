@@ -61,8 +61,8 @@ var (
 // data.
 //
 // Caller can specify multiple ascending keys and getReadRangeFromProps will return
-// the offsets per file for each key. For a range [keyA, keyB), the caller can use
-// result[A] as startOffsets and result[B] as estimatedEndOffsets.
+// the start/end offsets per file for each key. For a range [keyA, keyB), the caller can use
+// result[A][0] as startOffsets and result[B][1] as endOffsets.
 // Empty jobKeys returns an empty result.
 func getReadRangeFromProps(
 	ctx context.Context,

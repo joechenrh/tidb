@@ -705,6 +705,7 @@ func TestReadAllDataLargeFiles(t *testing.T) {
 	require.NoError(t, err)
 	err = readAllData(
 		ctx, store, dataFiles, statFiles,
+		make([]cachedReader, len(dataFiles)),
 		startKey, endKey,
 		readRanges[0][0],
 		readRanges[1][1],
@@ -861,6 +862,7 @@ finishCreateFiles:
 	require.NoError(t, err)
 	err = readAllData(
 		ctx, store, dataFiles, statFiles,
+		make([]cachedReader, len(dataFiles)),
 		readRangeStart, readRangeEnd,
 		readRanges[0][0],
 		readRanges[1][1],
