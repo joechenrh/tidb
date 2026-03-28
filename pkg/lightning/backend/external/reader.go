@@ -38,7 +38,7 @@ import (
 func readAllData(
 	ctx context.Context,
 	store storeapi.Storage,
-	dataFiles, statsFiles []string,
+	dataFiles []string,
 	cachedReaders []cachedReader,
 	startKey, endKey []byte,
 	startOffsets, endOffsets []uint64,
@@ -49,7 +49,6 @@ func readAllData(
 	task := log.BeginTask(logutil.Logger(ctx), "read all data")
 	task.Info("arguments",
 		zap.Int("data-file-count", len(dataFiles)),
-		zap.Int("stat-file-count", len(statsFiles)),
 		zap.String("start-key", hex.EncodeToString(startKey)),
 		zap.String("end-key", hex.EncodeToString(endKey)),
 	)

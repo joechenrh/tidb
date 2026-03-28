@@ -284,7 +284,6 @@ func (e *Engine) loadRangeBatchData(
 		ctx,
 		e.storage,
 		e.dataFiles,
-		e.statsFiles,
 		cachedReaders,
 		startKey,
 		endKey,
@@ -535,8 +534,8 @@ func (e *Engine) LoadIngestData(
 		currBatchSize = e.handleConcurrencyChange(ctx, currBatchSize)
 		// want to generate N ranges, so we need N+1 keys
 		end := min(1+start+currBatchSize, len(e.jobKeys))
-		startOffsets := readRangesPerKey[start][0]
-		endOffsets := readRangesPerKey[end-1][1]
+		startOffsets := readRangesPerKey[start].Start
+		endOffsets := readRangesPerKey[end-1].End
 		err = e.loadRangeBatchData(ctx, cachedReaders, e.jobKeys[start:end], startOffsets, endOffsets, outCh)
 		if err != nil {
 			return err

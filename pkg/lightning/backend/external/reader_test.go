@@ -180,11 +180,11 @@ func TestReadLargeFile(t *testing.T) {
 	require.NoError(t, err)
 
 	err = readAllData(
-		ctx, memStore, datas, stats,
+		ctx, memStore, datas,
 		make([]cachedReader, len(datas)),
 		startKey, endKey,
-		readRanges[0][0],
-		readRanges[1][1],
+		readRanges[0].Start,
+		readRanges[1].End,
 		smallBlockBufPool, largeBlockBufPool, output)
 	require.NoError(t, err)
 	output.build(ctx)
@@ -238,18 +238,18 @@ func TestReadAllDataReuseSequentialReaderAcrossBatches(t *testing.T) {
 
 	firstOutput := &memKVsAndBuffers{}
 	err = readAllData(
-		ctx, store, datas, stats, cachedReaders,
+		ctx, store, datas, cachedReaders,
 		jobKeys[0], jobKeys[1],
-		readRanges[0][0], readRanges[1][1],
+		readRanges[0].Start, readRanges[1].End,
 		smallBlockBufPool, largeBlockBufPool, firstOutput,
 	)
 	require.NoError(t, err)
 
 	secondOutput := &memKVsAndBuffers{}
 	err = readAllData(
-		ctx, store, datas, stats, cachedReaders,
+		ctx, store, datas, cachedReaders,
 		jobKeys[1], jobKeys[2],
-		readRanges[1][0], readRanges[2][1],
+		readRanges[1].Start, readRanges[2].End,
 		smallBlockBufPool, largeBlockBufPool, secondOutput,
 	)
 	require.NoError(t, err)

@@ -54,22 +54,27 @@ var (
 	getReadRangeFromPropsConcurrency = 64
 )
 
-// getReadRangeFromProps reads the statistic files to find the largest offset of
-// corresponding sorted data file such that the key at offset is less than or
-// equal to the given start keys. These returned offsets can be used to seek data
-// file reader, read, parse and skip few smaller keys, and then locate the needed
-// data.
+// ReadRange stores per-file offsets derived from range properties for one key.
+type ReadRange struct {
+	Start []uint64
+	End   []uint64
+}
+
+// getReadRangeFromProps reads the statistic files to find both start and end
+// offsets for each requested key. The start offset is the largest offset such
+// that the key at the offset is less than or equal to the requested key; the
+// end offset is derived from that property's total encoded size.
 //
 // Caller can specify multiple ascending keys and getReadRangeFromProps will return
 // the start/end offsets per file for each key. For a range [keyA, keyB), the caller can use
-// result[A][0] as startOffsets and result[B][1] as endOffsets.
+// result[A].Start as startOffsets and result[B].End as endOffsets.
 // Empty jobKeys returns an empty result.
 func getReadRangeFromProps(
 	ctx context.Context,
 	jobKeys [][]byte,
 	paths []string,
 	exStorage storeapi.Storage,
-) (_ [][2][]uint64, err error) {
+) (_ []ReadRange, err error) {
 	logger := logutil.Logger(ctx)
 	task := log.BeginTask(logger, "seek props offsets")
 	defer func() {
@@ -81,7 +86,7 @@ func getReadRangeFromProps(
 		starts[i] = kv.Key(jobKeys[i])
 	}
 	if len(starts) == 0 {
-		return [][2][]uint64{}, nil
+		return []ReadRange{}, nil
 	}
 
 	offsetsPerFile := make([][][2]uint64, len(paths))
@@ -143,13 +148,13 @@ func getReadRangeFromProps(
 		return nil, err
 	}
 
-	readRangesPerKey := make([][2][]uint64, len(starts))
+	readRangesPerKey := make([]ReadRange, len(starts))
 	for i := range starts {
-		readRangesPerKey[i][0] = make([]uint64, len(paths))
-		readRangesPerKey[i][1] = make([]uint64, len(paths))
+		readRangesPerKey[i].Start = make([]uint64, len(paths))
+		readRangesPerKey[i].End = make([]uint64, len(paths))
 		for j := range paths {
-			readRangesPerKey[i][0][j] = offsetsPerFile[j][i][0]
-			readRangesPerKey[i][1][j] = offsetsPerFile[j][i][1]
+			readRangesPerKey[i].Start[j] = offsetsPerFile[j][i][0]
+			readRangesPerKey[i].End[j] = offsetsPerFile[j][i][1]
 		}
 	}
 	return readRangesPerKey, nil
