@@ -194,9 +194,9 @@ type fileReader interface {
 	// will be allocated from the provided membuf.Buffer if needed.
 	nextKV(*membuf.Buffer) ([]byte, []byte, error)
 
-	// reserve is used to reserve the last read key-value pair
-	// When the key is out of range, we can cache it. So we can skip opening a
-	// new reader and seeking when we need to read next time.
+	// reserve stores the first key-value pair outside the current range so a
+	// reused sequential reader can continue from it in the next batch. Readers
+	// that are never reused may implement this as a no-op.
 	reserve(key, value []byte)
 
 	close() error
@@ -408,6 +408,10 @@ func (r *concurrentReader) nextKV(blockBuf *membuf.Buffer) ([]byte, []byte, erro
 // reserve is a no-op because concurrent readers are not reused across batches.
 func (r *concurrentReader) reserve([]byte, []byte) {}
 
+// cachedReader keeps a file reader across readAllData calls so sequential reads
+// can resume from the previous batch boundary without reopening the file.
+// Only sequential readers are reused; concurrent readers always read a fresh
+// byte range into new buffers and are recreated per batch.
 type cachedReader struct {
 	r                fileReader
 	lastIsConcurrent bool
