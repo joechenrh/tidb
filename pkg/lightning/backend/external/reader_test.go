@@ -254,7 +254,15 @@ func TestReadAllDataReuseSequentialReaderAcrossBatches(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	firstOutput.build(ctx)
+	secondOutput.build(ctx)
 	require.EqualValues(t, 1, store.openCount.Load())
+	require.Len(t, firstOutput.kvs, 2500)
+	require.Len(t, secondOutput.kvs, 2499)
+	require.Equal(t, []byte("key000000"), firstOutput.kvs[0].Key)
+	require.Equal(t, []byte("key002499"), firstOutput.kvs[len(firstOutput.kvs)-1].Key)
+	require.Equal(t, []byte("key002500"), secondOutput.kvs[0].Key)
+	require.Equal(t, []byte("key004998"), secondOutput.kvs[len(secondOutput.kvs)-1].Key)
 }
 
 func TestReadKVFilesAsync(t *testing.T) {

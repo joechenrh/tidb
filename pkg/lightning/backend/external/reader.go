@@ -98,7 +98,7 @@ func readAllData(
 						return nil
 					}
 					if err := cachedReaders[fileIdx].open(
-						egCtx,
+						ctx,
 						store,
 						dataFiles[fileIdx],
 						int64(startOffsets[fileIdx]),
@@ -134,12 +134,15 @@ func readAllData(
 }
 
 func closeCachedReaders(cachedReaders []cachedReader) error {
+	var firstErr error
 	for i := range cachedReaders {
 		if err := cachedReaders[i].close(); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // ReadKVFilesAsync reads multiple KV files asynchronously and sends the KV pairs
@@ -225,7 +228,11 @@ func newSequentialReader(
 func (r *sequentialReader) nextKV(smallBlockBuf *membuf.Buffer) (key, value []byte, err error) {
 	if r.reserved {
 		r.reserved = false
-		return r.reservedKey, r.reservedVal, nil
+		key = smallBlockBuf.AddBytes(r.reservedKey)
+		value = smallBlockBuf.AddBytes(r.reservedVal)
+		r.reservedKey = nil
+		r.reservedVal = nil
+		return key, value, nil
 	}
 
 	k, v, err := r.kvr.NextKV()
@@ -238,8 +245,8 @@ func (r *sequentialReader) nextKV(smallBlockBuf *membuf.Buffer) (key, value []by
 
 func (r *sequentialReader) reserve(key, value []byte) {
 	r.reserved = true
-	r.reservedKey = key
-	r.reservedVal = value
+	r.reservedKey = bytes.Clone(key)
+	r.reservedVal = bytes.Clone(value)
 }
 
 func (r *sequentialReader) close() (err error) {
@@ -399,6 +406,7 @@ func (r *concurrentReader) nextKV(blockBuf *membuf.Buffer) ([]byte, []byte, erro
 	return keyAndValue[:keyLen], keyAndValue[keyLen:], nil
 }
 
+// reserve is a no-op because concurrent readers are not reused across batches.
 func (r *concurrentReader) reserve([]byte, []byte) {}
 
 type cachedReader struct {
@@ -426,7 +434,7 @@ func (cr *cachedReader) open(
 
 	// only log for files with expected concurrency > 1, to avoid too many logs
 	if concurrency > 1 {
-		logutil.Logger(ctx).Info("found hotspot file in readOneFile",
+		logutil.Logger(ctx).Info("found hotspot file in readAllData",
 			zap.String("filename", dataFile),
 			zap.Int64("startOffset", startOffset),
 			zap.Int64("endOffset", endOffset),

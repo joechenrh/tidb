@@ -151,6 +151,7 @@ func MergeOverlappingFilesV2(
 			loaded,
 		)
 		if err1 != nil {
+			_ = closeCachedReaders(cachedReaders)
 			logutil.Logger(ctx).Warn("read all data failed", zap.Error(err1))
 			return
 		}
