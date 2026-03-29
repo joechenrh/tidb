@@ -910,3 +910,8 @@ func decodeTableID(key Key) int64 {
 	}
 	return 0
 }
+
+// OpenDDLStoreFunc is a factory function that creates a dedicated Storage for
+// DDL backfill operations with tuned gRPC settings. It is set by
+// pkg/store/driver to avoid import cycles. If nil, the main store is used.
+var OpenDDLStoreFunc func(mainStore Storage) (Storage, error)

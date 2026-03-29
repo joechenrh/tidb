@@ -176,7 +176,15 @@ func (s *backfillDistExecutor) newBackfillStepExecutor(
 		jc := ddlObj.jobContext(jobMeta.ID, jobMeta.ReorgMeta)
 		ddlObj.attachTopProfilingInfo(jobMeta.ID, jobMeta.Query)
 		ddlObj.setDDLSourceForDiagnosis(jobMeta.ID, jobMeta.Type)
-		return newReadIndexExecutor(store, sessPool, ddlObj.etcdCli, jobMeta, indexInfos, tbl, jc, cloudStorageURI, estRowSize)
+		// For the read-index step, prefer the dedicated DDL store which has
+		// smaller gRPC window sizes to reduce memory during global sort ADD
+		// INDEX. Only use it when we haven't switched to a cross-keyspace
+		// store (i.e., store is still the original ddlObj.store).
+		readStore := store
+		if len(cloudStorageURI) > 0 && store == ddlObj.store && ddlObj.ddlStore != nil {
+			readStore = ddlObj.ddlStore
+		}
+		return newReadIndexExecutor(readStore, sessPool, ddlObj.etcdCli, jobMeta, indexInfos, tbl, jc, cloudStorageURI, estRowSize)
 	case proto.BackfillStepMergeSort:
 		return newMergeSortExecutor(&s.task.TaskBase, store, jobMeta.ID, indexInfos, tbl, cloudStorageURI)
 	case proto.BackfillStepWriteAndIngest:

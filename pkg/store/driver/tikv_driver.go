@@ -63,6 +63,10 @@ func init() {
 	// Setup the Hooks to dynamic control global resource controller.
 	variable.EnableGlobalResourceControlFunc = tikv.EnableResourceControl
 	variable.DisableGlobalResourceControlFunc = tikv.DisableResourceControl
+
+	// Register the DDL store factory so pkg/ddl can create a dedicated store
+	// with tuned gRPC settings without importing this package directly.
+	kv.OpenDDLStoreFunc = OpenDDLStore
 }
 
 // Option is a function that changes some config of Driver

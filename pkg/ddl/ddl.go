@@ -354,6 +354,13 @@ type ddlCtx struct {
 	schemaVerSyncer   schemaver.Syncer
 	serverStateSyncer serverstate.Syncer
 
+	// ddlStore is a dedicated kv.Storage for DDL backfill (read-index)
+	// operations. It uses smaller gRPC window sizes (4 MiB vs 128 MiB) to
+	// reduce memory consumption during global sort ADD INDEX without
+	// affecting OLTP workloads. It may be nil for non-TiKV stores (e.g.,
+	// unistore in tests), in which case the main store is used.
+	ddlStore kv.Storage
+
 	ddlEventCh   chan<- *notifier.SchemaChangeEvent
 	lease        time.Duration // lease is schema lease, default 45s, see config.Lease.
 	infoCache    *infoschema.InfoCache
@@ -782,9 +789,23 @@ func newDDL(ctx context.Context, options ...Option) (*ddl, *executor) {
 		panic("infoCache should not be nil")
 	}
 
+	// Create a dedicated DDL store with smaller gRPC window sizes to reduce
+	// memory consumption during global sort ADD INDEX. Falls back to the
+	// main store if creation fails or if the factory is not registered
+	// (e.g., in tests with unistore).
+	ddlStore := opt.Store
+	if kv.OpenDDLStoreFunc != nil {
+		if ds, err := kv.OpenDDLStoreFunc(opt.Store); err != nil {
+			logutil.DDLLogger().Warn("failed to open dedicated DDL store, falling back to main store", zap.Error(err))
+		} else {
+			ddlStore = ds
+		}
+	}
+
 	ddlCtx := &ddlCtx{
 		uuid:              id,
 		store:             opt.Store,
+		ddlStore:          ddlStore,
 		lease:             opt.Lease,
 		ownerManager:      manager,
 		schemaVerSyncer:   schemaVerSyncer,
@@ -1199,6 +1220,14 @@ func (d *ddl) close() {
 	}
 	if d.sessPool != nil {
 		d.sessPool.Close()
+	}
+	// Close the dedicated DDL store if it differs from the main store.
+	// This must happen before the main store is closed to avoid issues
+	// with shared cluster resources.
+	if d.ddlStore != nil && d.ddlStore != d.store {
+		if err := d.ddlStore.Close(); err != nil {
+			logutil.DDLLogger().Warn("failed to close DDL store", zap.Error(err))
+		}
 	}
 	variable.UnregisterStatistics(d)
 
