@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -29,7 +30,9 @@ import (
 	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/tikv/client-go/v2/config"
 	"github.com/tikv/client-go/v2/tikv"
+	"github.com/tikv/client-go/v2/tikvrpc"
 	"github.com/tikv/client-go/v2/util"
+	"github.com/tikv/client-go/v2/util/async"
 	pd "github.com/tikv/pd/client"
 	pdhttp "github.com/tikv/pd/client/http"
 	"github.com/tikv/pd/client/opt"
@@ -51,7 +54,14 @@ const (
 	// ddlGRPCInitialConnWindowSize is the gRPC initial connection-level window
 	// size for DDL backfill operations (4 MiB), matching the stream-level size.
 	ddlGRPCInitialConnWindowSize int32 = 4 * 1024 * 1024
+
+	// ddlGRPCConnectionCount is the connection count per TiKV store for the
+	// dedicated DDL store. Using a single connection further caps the per-store
+	// in-flight gRPC memory during read-index global sort.
+	ddlGRPCConnectionCount uint = 1
 )
+
+var ddlClientConfigMu sync.Mutex
 
 // OpenDDLStore creates a dedicated kv.Storage for DDL backfill (read-index)
 // operations with smaller gRPC window sizes to reduce memory consumption.
@@ -158,7 +168,15 @@ func OpenDDLStore(mainStore kv.Storage) (kv.Storage, error) {
 	clusterID := pdCli.GetClusterID(context.TODO())
 	uuid := fmt.Sprintf("tikv-%v/%s/ddl", clusterID, keyspaceName)
 
-	s, err := tikv.NewKVStore(uuid, pdClient, spkv, &injectTraceClient{Client: rpcClient},
+	ddlClient := &ddlRPCClient{
+		Client: rpcClient,
+		cfg: ddlRPCClientConfig{
+			grpcConnectionCount: ddlGRPCConnectionCount,
+			maxBatchSize:        0,
+		},
+	}
+
+	s, err := tikv.NewKVStore(uuid, pdClient, spkv, &injectTraceClient{Client: ddlClient},
 		tikv.WithPDHTTPClient("tikv-ddl-store", etcdAddrs,
 			pdhttp.WithTLSConfig(tlsConfig),
 			pdhttp.WithMetrics(metrics.PDAPIRequestCounter, metrics.PDAPIExecutionHistogram)))
@@ -189,6 +207,8 @@ func OpenDDLStore(mainStore kv.Storage) (kv.Storage, error) {
 	}
 
 	logutil.BgLogger().Info("opened dedicated DDL store with reduced gRPC window sizes",
+		zap.Uint("grpcConnectionCount", ddlGRPCConnectionCount),
+		zap.Uint("maxBatchSize", ddlClient.cfg.maxBatchSize),
 		zap.Int32("initialWindowSize", ddlGRPCInitialWindowSize),
 		zap.Int32("initialConnWindowSize", ddlGRPCInitialConnWindowSize),
 		zap.String("uuid", uuid))
@@ -223,4 +243,42 @@ func setRPCClientGRPCDialOptions(rpcClient any, opts []grpc.DialOption) {
 	}
 	// Write to the unexported field via unsafe pointer.
 	*(*[]grpc.DialOption)(unsafe.Pointer(grpcField.UnsafeAddr())) = opts
+}
+
+type ddlRPCClientConfig struct {
+	grpcConnectionCount uint
+	maxBatchSize        uint
+}
+
+// ddlRPCClient wraps the dedicated DDL RPC client and temporarily overrides
+// client-go's global TiKV config for the duration of request dispatch. This is
+// a hack for validation until client-go exports per-client connection-count
+// configuration.
+type ddlRPCClient struct {
+	tikv.Client
+	cfg ddlRPCClientConfig
+}
+
+func (c *ddlRPCClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	restore := c.overrideConfig()
+	defer restore()
+	return c.Client.SendRequest(ctx, addr, req, timeout)
+}
+
+func (c *ddlRPCClient) SendRequestAsync(ctx context.Context, addr string, req *tikvrpc.Request, cb async.Callback[*tikvrpc.Response]) {
+	restore := c.overrideConfig()
+	defer restore()
+	c.Client.SendRequestAsync(ctx, addr, req, cb)
+}
+
+func (c *ddlRPCClient) overrideConfig() func() {
+	ddlClientConfigMu.Lock()
+	restore := config.UpdateGlobal(func(conf *config.Config) {
+		conf.TiKVClient.GrpcConnectionCount = c.cfg.grpcConnectionCount
+		conf.TiKVClient.MaxBatchSize = c.cfg.maxBatchSize
+	})
+	return func() {
+		restore()
+		ddlClientConfigMu.Unlock()
+	}
 }
