@@ -3087,6 +3087,7 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 	var (
 		taskID                                              int64
 		lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed int
+		lastUploadPartSize                                  int64
 	)
 	if task != nil {
 		// It's possible that the task state is succeed but the ddl job is paused.
@@ -3106,6 +3107,7 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 		lastRequiredSlots = task.RequiredSlots
 		lastBatchSize = taskMeta.Job.ReorgMeta.GetBatchSize()
 		lastMaxWriteSpeed = taskMeta.Job.ReorgMeta.GetMaxWriteSpeed()
+		lastUploadPartSize = taskMeta.Job.ReorgMeta.GetUploadPartSize()
 		g.Go(func() error {
 			defer close(done)
 			backoffer := backoff.NewExponential(scheduler.RetrySQLInterval, 2, scheduler.RetrySQLMaxInterval)
@@ -3163,6 +3165,7 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 		lastRequiredSlots = requiredSlots
 		lastBatchSize = taskMeta.Job.ReorgMeta.GetBatchSize()
 		lastMaxWriteSpeed = taskMeta.Job.ReorgMeta.GetMaxWriteSpeed()
+		lastUploadPartSize = taskMeta.Job.ReorgMeta.GetUploadPartSize()
 
 		g.Go(func() error {
 			defer close(done)
@@ -3202,7 +3205,7 @@ func (w *worker) executeDistTask(jobCtx *jobContext, t table.Table, reorgInfo *r
 
 	g.Go(func() error {
 		modifyTaskParamLoop(ctx, jobCtx.sysTblMgr, taskManager, done,
-			reorgInfo.Job.ID, taskID, lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed)
+			reorgInfo.Job.ID, taskID, lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed, lastUploadPartSize)
 		return nil
 	})
 
@@ -3245,6 +3248,7 @@ func modifyTaskParamLoop(
 	done chan struct{},
 	jobID, taskID int64,
 	lastRequiredSlots, lastBatchSize, lastMaxWriteSpeed int,
+	lastUploadPartSize int64,
 ) {
 	logger := logutil.DDLLogger().With(zap.Int64("jobID", jobID), zap.Int64("taskID", taskID))
 	ticker := time.NewTicker(UpdateDDLJobReorgCfgInterval)
@@ -3266,7 +3270,7 @@ func modifyTaskParamLoop(
 			continue
 		}
 
-		modifies := make([]proto.Modification, 0, 3)
+		modifies := make([]proto.Modification, 0, 4)
 		workerCntLimit := latestJob.ReorgMeta.GetConcurrency()
 		requiredSlots, err := adjustConcurrency(ctx, taskManager, workerCntLimit)
 		if err != nil {
@@ -3291,6 +3295,13 @@ func modifyTaskParamLoop(
 			modifies = append(modifies, proto.Modification{
 				Type: proto.ModifyMaxWriteSpeed,
 				To:   int64(maxWriteSpeed),
+			})
+		}
+		uploadPartSize := vardef.GetDDLReorgUploadPartSize()
+		if uploadPartSize != lastUploadPartSize {
+			modifies = append(modifies, proto.Modification{
+				Type: proto.ModifyUploadPartSize,
+				To:   uploadPartSize,
 			})
 		}
 		if len(modifies) == 0 {
@@ -3323,10 +3334,13 @@ func modifyTaskParamLoop(
 			zap.Int("oldBatchSize", lastBatchSize), zap.Int("newBatchSize", batchSize),
 			zap.String("oldMaxWriteSpeed", units.HumanSize(float64(lastMaxWriteSpeed))),
 			zap.String("newMaxWriteSpeed", units.HumanSize(float64(maxWriteSpeed))),
+			zap.String("oldUploadPartSize", units.BytesSize(float64(lastUploadPartSize))),
+			zap.String("newUploadPartSize", units.BytesSize(float64(uploadPartSize))),
 		)
 		lastRequiredSlots = requiredSlots
 		lastBatchSize = batchSize
 		lastMaxWriteSpeed = maxWriteSpeed
+		lastUploadPartSize = uploadPartSize
 	}
 }
 

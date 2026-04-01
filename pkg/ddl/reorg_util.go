@@ -128,6 +128,7 @@ func initJobReorgMetaFromVariables(ctx context.Context, job *model.Job, tbl tabl
 			m.SetBatchSize(variable.TidbOptInt(sv, 0))
 		}
 		m.SetMaxWriteSpeed(int(vardef.DDLReorgMaxWriteSpeed.Load()))
+		m.SetUploadPartSize(vardef.GetDDLReorgUploadPartSize())
 	}
 
 	if setDistTaskParam {
@@ -174,6 +175,7 @@ func initJobReorgMetaFromVariables(ctx context.Context, job *model.Job, tbl tabl
 		zap.String("tableSizeInBytes", units.BytesSize(float64(tableSizeInBytes))),
 		zap.Int("concurrency", m.GetConcurrency()),
 		zap.Int("batchSize", m.GetBatchSize()),
+		zap.String("uploadPartSize", units.BytesSize(float64(m.GetUploadPartSize()))),
 		factorField,
 	)
 	return nil

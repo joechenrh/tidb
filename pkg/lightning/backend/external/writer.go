@@ -202,24 +202,26 @@ func dummyOnWriterCloseFunc(*WriterSummary) {}
 
 // WriterBuilder builds a new Writer.
 type WriterBuilder struct {
-	groupOffset  int
-	memSizeLimit uint64
-	blockSize    int
-	propSizeDist uint64
-	propKeysDist uint64
-	onClose      OnWriterCloseFunc
-	tikvCodec    tikv.Codec
-	onDup        engineapi.OnDuplicateKey
+	groupOffset    int
+	memSizeLimit   uint64
+	blockSize      int
+	uploadPartSize int64
+	propSizeDist   uint64
+	propKeysDist   uint64
+	onClose        OnWriterCloseFunc
+	tikvCodec      tikv.Codec
+	onDup          engineapi.OnDuplicateKey
 }
 
 // NewWriterBuilder creates a WriterBuilder.
 func NewWriterBuilder() *WriterBuilder {
 	return &WriterBuilder{
-		memSizeLimit: DefaultMemSizeLimit,
-		blockSize:    DefaultBlockSize,
-		propSizeDist: defaultPropSizeDist,
-		propKeysDist: defaultPropKeysDist,
-		onClose:      dummyOnWriterCloseFunc,
+		memSizeLimit:   DefaultMemSizeLimit,
+		blockSize:      DefaultBlockSize,
+		uploadPartSize: MinUploadPartSize,
+		propSizeDist:   defaultPropSizeDist,
+		propKeysDist:   defaultPropKeysDist,
+		onClose:        dummyOnWriterCloseFunc,
 	}
 }
 
@@ -256,6 +258,15 @@ func (b *WriterBuilder) SetOnCloseFunc(onClose OnWriterCloseFunc) *WriterBuilder
 // SetBlockSize sets the block size of pre-allocated buf in the writer.
 func (b *WriterBuilder) SetBlockSize(blockSize int) *WriterBuilder {
 	b.blockSize = blockSize
+	return b
+}
+
+// SetUploadPartSize sets the upload part size when writing to object storage.
+func (b *WriterBuilder) SetUploadPartSize(partSize int64) *WriterBuilder {
+	if partSize < MinUploadPartSize {
+		partSize = MinUploadPartSize
+	}
+	b.uploadPartSize = partSize
 	return b
 }
 
@@ -314,6 +325,7 @@ func (b *WriterBuilder) Build(
 		fileMinKeys:    make([]tidbkv.Key, 0, multiFileStatNum),
 		fileMaxKeys:    make([]tidbkv.Key, 0, multiFileStatNum),
 		tikvCodec:      b.tikvCodec,
+		uploadPartSize: b.uploadPartSize,
 	}
 
 	return ret
@@ -458,7 +470,8 @@ type Writer struct {
 	// since we have 1 stat file per kv file, so no need to count it separately.
 	kvFileCount int
 
-	tikvCodec tikv.Codec
+	tikvCodec      tikv.Codec
+	uploadPartSize int64
 	// duplicate key's statistics.
 	conflictInfo engineapi.ConflictInfo
 }
@@ -818,7 +831,7 @@ func (w *Writer) createStorageWriter(ctx context.Context) (
 	dataPath := filepath.Join(w.getPartitionedPrefix(), strconv.Itoa(w.currentSeq))
 	dataWriter, err := w.store.Create(ctx, dataPath, &storeapi.WriterOption{
 		Concurrency: 20,
-		PartSize:    MinUploadPartSize,
+		PartSize:    w.uploadPartSize,
 	})
 	if err != nil {
 		return "", "", nil, nil, err
@@ -826,7 +839,7 @@ func (w *Writer) createStorageWriter(ctx context.Context) (
 	statPath := filepath.Join(w.getPartitionedPrefix()+statSuffix, strconv.Itoa(w.currentSeq))
 	statsWriter, err := w.store.Create(ctx, statPath, &storeapi.WriterOption{
 		Concurrency: 20,
-		PartSize:    MinUploadPartSize,
+		PartSize:    w.uploadPartSize,
 	})
 	if err != nil {
 		_ = dataWriter.Close(ctx)
@@ -839,7 +852,7 @@ func (w *Writer) createDupWriter(ctx context.Context) (string, objectio.Writer, 
 	path := filepath.Join(w.getPartitionedPrefix()+dupSuffix, strconv.Itoa(w.currentSeq))
 	writer, err := w.store.Create(ctx, path, &storeapi.WriterOption{
 		Concurrency: 20,
-		PartSize:    MinUploadPartSize})
+		PartSize:    w.uploadPartSize})
 	return path, writer, err
 }
 

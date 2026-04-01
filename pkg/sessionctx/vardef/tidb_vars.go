@@ -614,6 +614,8 @@ const (
 
 	// TiDBDDLReorgMaxWriteSpeed defines the max write limitation for the lightning local backend
 	TiDBDDLReorgMaxWriteSpeed = "tidb_ddl_reorg_max_write_speed"
+	// TiDBDDLReorgUploadPartSize defines the multipart upload part size used by read-index global sort writer.
+	TiDBDDLReorgUploadPartSize = "tidb_ddl_reorg_upload_part_size"
 
 	// TiDBEnableAutoIncrementInGenerated disables the mysql compatibility check on using auto-incremented columns in
 	// expression indexes and generated columns described here https://dev.mysql.com/doc/refman/5.7/en/create-table-generated-columns.html for details.
@@ -1517,6 +1519,7 @@ const (
 	DefTiDBDDLFlashbackConcurrency          = 64
 	DefTiDBDDLErrorCountLimit               = 512
 	DefTiDBDDLReorgMaxWriteSpeed            = 0
+	DefTiDBDDLReorgUploadPartSize           = 5 * 1024 * 1024
 	DefTiDBMaxDeltaSchemaCount              = 1024
 	DefTiDBPlacementMode                    = PlacementModeStrict
 	DefTiDBEnableAutoIncrementInGenerated   = false
@@ -1672,6 +1675,8 @@ const (
 	// MaxDDLReorgBatchSize is exported for testing.
 	MaxDDLReorgBatchSize                  int32  = 10240
 	MinDDLReorgBatchSize                  int32  = 32
+	MinDDLReorgUploadPartSize             int64  = 5 * 1024 * 1024
+	MaxDDLReorgUploadPartSize             int64  = 1 * 1024 * 1024 * 1024
 	MinExpensiveQueryTimeThreshold        uint64 = 10 // 10s
 	MinExpensiveTxnTimeThreshold          uint64 = 60 // 60s
 	DefTiDBAutoBuildStatsConcurrency             = 1
@@ -1812,6 +1817,7 @@ var (
 	DDLErrorCountLimit       int64 = DefTiDBDDLErrorCountLimit
 	DDLReorgRowFormat        int64 = DefTiDBRowFormatV2
 	DDLReorgMaxWriteSpeed          = atomic.NewInt64(DefTiDBDDLReorgMaxWriteSpeed)
+	DDLReorgUploadPartSize         = atomic.NewInt64(DefTiDBDDLReorgUploadPartSize)
 	MaxDeltaSchemaCount      int64 = DefTiDBMaxDeltaSchemaCount
 	GlobalSlowLogRateLimiter       = rate.NewLimiter(rate.Inf, 1)
 	// DDLSlowOprThreshold is the threshold for ddl slow operations, uint is millisecond.
@@ -2225,6 +2231,17 @@ func SetDDLReorgBatchSize(cnt int32) {
 // GetDDLReorgBatchSize gets DDLReorgBatchSize.
 func GetDDLReorgBatchSize() int32 {
 	return goatomic.LoadInt32(&DDLReorgBatchSize)
+}
+
+// SetDDLReorgUploadPartSize sets DDLReorgUploadPartSize.
+// Sysvar validation enforces the range to already be correct.
+func SetDDLReorgUploadPartSize(size int64) {
+	DDLReorgUploadPartSize.Store(size)
+}
+
+// GetDDLReorgUploadPartSize gets DDLReorgUploadPartSize.
+func GetDDLReorgUploadPartSize() int64 {
+	return DDLReorgUploadPartSize.Load()
 }
 
 // SetDDLErrorCountLimit sets ddlErrorCountlimit size.

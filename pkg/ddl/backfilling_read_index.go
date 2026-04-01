@@ -264,6 +264,10 @@ func (r *readIndexStepExecutor) TaskMetaModified(_ context.Context, newMeta []by
 	if newBatchSize != r.job.ReorgMeta.GetBatchSize() {
 		r.job.ReorgMeta.SetBatchSize(newBatchSize)
 	}
+	newUploadPartSize := newTaskMeta.Job.ReorgMeta.GetUploadPartSize()
+	if newUploadPartSize != r.job.ReorgMeta.GetUploadPartSize() {
+		r.job.ReorgMeta.SetUploadPartSize(newUploadPartSize)
+	}
 	// Only local sort need modify write speed in this step.
 	if !r.isGlobalSort() {
 		newMaxWriteSpeed := newTaskMeta.Job.ReorgMeta.GetMaxWriteSpeed()

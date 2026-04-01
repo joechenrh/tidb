@@ -98,9 +98,10 @@ type DDLReorgMeta struct {
 	// These two variables are used to control the concurrency and batch size of the reorganization process.
 	// They can be adjusted dynamically through `admin alter ddl jobs` command.
 	// Note: Don't get or set these two variables directly, use the functions instead.
-	Concurrency   atomic.Int64 `json:"concurrency"`
-	BatchSize     atomic.Int64 `json:"batch_size"`
-	MaxWriteSpeed atomic.Int64 `json:"max_write_speed"`
+	Concurrency    atomic.Int64 `json:"concurrency"`
+	BatchSize      atomic.Int64 `json:"batch_size"`
+	MaxWriteSpeed  atomic.Int64 `json:"max_write_speed"`
+	UploadPartSize atomic.Int64 `json:"upload_part_size"`
 }
 
 // ShallowCopy creates a shallow copy of DDLReorgMeta.
@@ -149,6 +150,21 @@ func (dm *DDLReorgMeta) GetMaxWriteSpeed() int {
 // SetMaxWriteSpeed sets the max write speed in DDLReorgMeta.
 func (dm *DDLReorgMeta) SetMaxWriteSpeed(maxWriteSpeed int) {
 	dm.MaxWriteSpeed.Store(int64(maxWriteSpeed))
+}
+
+// GetUploadPartSize gets the multipart upload part size from DDLReorgMeta.
+func (dm *DDLReorgMeta) GetUploadPartSize() int64 {
+	partSize := dm.UploadPartSize.Load()
+	if partSize == 0 {
+		// when the job coming from old cluster, upload part size might not set
+		return vardef.GetDDLReorgUploadPartSize()
+	}
+	return partSize
+}
+
+// SetUploadPartSize sets the multipart upload part size in DDLReorgMeta.
+func (dm *DDLReorgMeta) SetUploadPartSize(uploadPartSize int64) {
+	dm.UploadPartSize.Store(uploadPartSize)
 }
 
 const (

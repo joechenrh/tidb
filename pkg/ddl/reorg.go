@@ -674,6 +674,7 @@ func (r *reorgInfo) UpdateConfigFromSysTbl(ctx context.Context) {
 		r.ReorgMeta.SetConcurrency(latestJob.ReorgMeta.GetConcurrency())
 		r.ReorgMeta.SetBatchSize(latestJob.ReorgMeta.GetBatchSize())
 		r.ReorgMeta.SetMaxWriteSpeed(latestJob.ReorgMeta.GetMaxWriteSpeed())
+		r.ReorgMeta.SetUploadPartSize(latestJob.ReorgMeta.GetUploadPartSize())
 	}
 }
 

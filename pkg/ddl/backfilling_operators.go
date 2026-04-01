@@ -209,6 +209,7 @@ func NewWriteIndexToExternalStoragePipeline(
 		zap.Int64("taskID", taskID),
 		zap.String("memCap", units.BytesSize(float64(memCap))),
 		zap.String("memSizePerIdx", units.BytesSize(float64(memSizePerIndex))),
+		zap.String("uploadPartSize", units.BytesSize(float64(reorgMeta.GetUploadPartSize()))),
 		zap.Int("avgRowSize", avgRowSize),
 		zap.Int("reader", readerCnt),
 		zap.Int("writer", writerCnt))
@@ -577,13 +578,13 @@ func (w *tableScanWorker) scanRecords(task TableScanTask, sender func(IndexRecor
 
 			_, tableScanRowCount := distsqlCtx.RuntimeStatsColl.GetCopCountAndRows(tableScanCopID)
 			idxResult := IndexRecordChunk{
-				ID:               task.ID,
-				Chunk:            srcChk,
-				Done:             done,
-				ctx:              w.ctx,
+				ID:                task.ID,
+				Chunk:             srcChk,
+				Done:              done,
+				ctx:               w.ctx,
 				tableScanRowCount: tableScanRowCount - lastTableScanRowCount,
-				conditionPushed:  conditionPushed,
-				releaseChunk:     w.recycleChunk,
+				conditionPushed:   conditionPushed,
+				releaseChunk:      w.recycleChunk,
 			}
 			lastTableScanRowCount = tableScanRowCount
 			sender(idxResult)
@@ -660,6 +661,7 @@ func NewWriteExternalStoreOperator(
 					SetMemorySizeLimit(memoryQuota).
 					SetTiKVCodec(tikvCodec).
 					SetBlockSize(blockSize).
+					SetUploadPartSize(reorgMeta.GetUploadPartSize()).
 					SetGroupOffset(i).
 					SetOnDup(onDuplicateKey)
 				writerID := uuid.New().String()

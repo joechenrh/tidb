@@ -273,6 +273,8 @@ func (sch *LitBackfillScheduler) ModifyMeta(oldMeta []byte, modifies []proto.Mod
 			taskMeta.Job.ReorgMeta.SetBatchSize(int(m.To))
 		case proto.ModifyMaxWriteSpeed:
 			taskMeta.Job.ReorgMeta.SetMaxWriteSpeed(int(m.To))
+		case proto.ModifyUploadPartSize:
+			taskMeta.Job.ReorgMeta.SetUploadPartSize(m.To)
 		default:
 			logutil.DDLLogger().Warn("invalid modify type",
 				zap.Int64("taskId", sch.GetTask().ID), zap.Stringer("modify", m))

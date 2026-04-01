@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/tidb/pkg/dxf/framework/proto"
 	"github.com/pingcap/tidb/pkg/dxf/framework/storage"
 	"github.com/pingcap/tidb/pkg/meta/model"
+	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
@@ -45,11 +46,14 @@ func TestModifyTaskParamLoop(t *testing.T) {
 	newEnv := func(t *testing.T) *env {
 		ctrl := gomock.NewController(t)
 		bak := UpdateDDLJobReorgCfgInterval
+		bakUploadPartSize := vardef.GetDDLReorgUploadPartSize()
 		t.Cleanup(func() {
 			ctrl.Finish()
 			UpdateDDLJobReorgCfgInterval = bak
+			vardef.SetDDLReorgUploadPartSize(bakUploadPartSize)
 		})
 		UpdateDDLJobReorgCfgInterval = 10 * time.Millisecond
+		vardef.SetDDLReorgUploadPartSize(vardef.DefTiDBDDLReorgUploadPartSize)
 		currentJob := &model.Job{ReorgMeta: &model.DDLReorgMeta{}}
 		currentJob.ReorgMeta.SetConcurrency(1)
 		currentJob.ReorgMeta.SetBatchSize(2)
@@ -76,7 +80,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		e := newEnv(t)
 		close(e.done)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -85,7 +89,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		e.sysTblMgr.EXPECT().GetJobByID(e.ctx, e.jobID).Return(nil, errors.New("some error"))
 		e.sysTblMgr.EXPECT().GetJobByID(e.ctx, e.jobID).Return(nil, systable.ErrNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -95,7 +99,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		e.taskMgr.EXPECT().GetCPUCountOfNode(e.ctx).Return(0, errors.New("some error"))
 		e.sysTblMgr.EXPECT().GetJobByID(e.ctx, e.jobID).Return(nil, systable.ErrNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -105,7 +109,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		e.taskMgr.EXPECT().GetCPUCountOfNode(e.ctx).Return(123, nil)
 		e.sysTblMgr.EXPECT().GetJobByID(e.ctx, e.jobID).Return(nil, systable.ErrNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -115,7 +119,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		e.taskMgr.EXPECT().GetCPUCountOfNode(e.ctx).Return(123, nil)
 		e.taskMgr.EXPECT().GetTaskByID(e.ctx, e.taskID).Return(nil, storage.ErrTaskNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -131,7 +135,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		e.taskMgr.EXPECT().GetCPUCountOfNode(e.ctx).Return(123, nil)
 		e.taskMgr.EXPECT().GetTaskByID(e.ctx, e.taskID).Return(nil, storage.ErrTaskNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -160,7 +164,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		// exit loop
 		e.sysTblMgr.EXPECT().GetJobByID(e.ctx, e.jobID).Return(nil, systable.ErrNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 
@@ -204,7 +208,7 @@ func TestModifyTaskParamLoop(t *testing.T) {
 		// exit loop
 		e.sysTblMgr.EXPECT().GetJobByID(e.ctx, e.jobID).Return(nil, systable.ErrNotFound)
 		modifyTaskParamLoop(e.ctx, e.sysTblMgr, e.taskMgr, e.done,
-			e.jobID, e.taskID, 1, 2, 3)
+			e.jobID, e.taskID, 1, 2, 3, vardef.DefTiDBDDLReorgUploadPartSize)
 		require.True(t, e.ctrl.Satisfied())
 	})
 }

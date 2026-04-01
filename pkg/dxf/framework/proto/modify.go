@@ -36,6 +36,8 @@ const (
 	ModifyBatchSize ModificationType = "modify_batch_size"
 	// ModifyMaxWriteSpeed is the type for modifying max write speed of add-index.
 	ModifyMaxWriteSpeed ModificationType = "modify_max_write_speed"
+	// ModifyUploadPartSize is the type for modifying upload part size of add-index global sort.
+	ModifyUploadPartSize ModificationType = "modify_upload_part_size"
 )
 
 // ModifyParam is the parameter for task modification.

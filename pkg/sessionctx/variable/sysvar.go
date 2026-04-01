@@ -898,6 +898,21 @@ var defaultSysVars = []*SysVar{
 		}, GetGlobal: func(_ context.Context, sv *SessionVars) (string, error) {
 			return strconv.FormatInt(vardef.DDLReorgMaxWriteSpeed.Load(), 10), nil
 		}},
+	{Scope: vardef.ScopeGlobal, Name: vardef.TiDBDDLReorgUploadPartSize, Value: strconv.FormatInt(vardef.DefTiDBDDLReorgUploadPartSize, 10), Type: vardef.TypeStr,
+		SetGlobal: func(_ context.Context, _ *SessionVars, val string) error {
+			i64, err := units.RAMInBytes(val)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			if i64 < vardef.MinDDLReorgUploadPartSize || i64 > vardef.MaxDDLReorgUploadPartSize {
+				return fmt.Errorf("invalid value for '%d', it should be within [%d, %d]", i64, vardef.MinDDLReorgUploadPartSize, vardef.MaxDDLReorgUploadPartSize)
+			}
+			vardef.SetDDLReorgUploadPartSize(i64)
+			return nil
+		},
+		GetGlobal: func(_ context.Context, _ *SessionVars) (string, error) {
+			return strconv.FormatInt(vardef.GetDDLReorgUploadPartSize(), 10), nil
+		}},
 	{Scope: vardef.ScopeGlobal, Name: vardef.TiDBDDLErrorCountLimit, Value: strconv.Itoa(vardef.DefTiDBDDLErrorCountLimit), Type: vardef.TypeUnsigned, MinValue: 0, MaxValue: math.MaxInt64, SetGlobal: func(_ context.Context, s *SessionVars, val string) error {
 		vardef.SetDDLErrorCountLimit(TidbOptInt64(val, vardef.DefTiDBDDLErrorCountLimit))
 		return nil
