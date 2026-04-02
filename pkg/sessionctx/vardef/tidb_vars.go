@@ -1519,7 +1519,7 @@ const (
 	DefTiDBDDLFlashbackConcurrency          = 64
 	DefTiDBDDLErrorCountLimit               = 512
 	DefTiDBDDLReorgMaxWriteSpeed            = 0
-	DefTiDBDDLReorgUploadPartSize           = 5 * 1024 * 1024
+	DefTiDBDDLReorgUploadPartSize           = 32 * 1024 * 1024
 	DefTiDBMaxDeltaSchemaCount              = 1024
 	DefTiDBPlacementMode                    = PlacementModeStrict
 	DefTiDBEnableAutoIncrementInGenerated   = false
