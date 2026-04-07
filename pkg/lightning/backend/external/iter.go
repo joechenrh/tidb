@@ -530,10 +530,17 @@ func NewMergeKVIter(
 
 	for i := range paths {
 		readerOpeners = append(readerOpeners, func() (*kvReaderProxy, error) {
-			rd, err := NewKVReader(ctx, paths[i], exStorage, pathsStartOffset[i], readBufferSize)
+			// Hardcoded fileFormatV0: NewMergeKVIter relies on KVReader's
+			// byteReader internals (mergeSortReadCounter and concurrent
+			// prefetch), which SegmentKVReader does not provide. Today every
+			// caller of NewMergeKVIter passes v0 paths; when v1 reaches this
+			// path the API needs to thread per-path file versions and props
+			// from the corresponding statsReaders.
+			stream, err := openKVStream(ctx, exStorage, paths[i], fileFormatV0, nil, pathsStartOffset[i], readBufferSize)
 			if err != nil {
 				return nil, err
 			}
+			rd := stream.(*KVReader)
 			rd.byteReader.mergeSortReadCounter = metrics.MergeSortReadBytes
 			rd.byteReader.enableConcurrentRead(
 				exStorage,
