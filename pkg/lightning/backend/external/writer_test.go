@@ -929,3 +929,54 @@ func TestRangePropertiesCollector_OnBoundaryNilNoOp(t *testing.T) {
 	require.NoError(t, rc.onNextEncodedData(encoded, uint64(len(encoded))))
 	require.Empty(t, rc.props)
 }
+
+func TestWriter_CompressedFlushHasFileHeader(t *testing.T) {
+	ctx := context.Background()
+	store := objstore.NewMemStorage()
+
+	// memSizeLimit is small enough that 200 ~30-byte rows trigger multiple
+	// flushes. Multi-flush coverage matters because flushSortedKVs installs a
+	// boundary closure that captures per-flush local state; the test must see
+	// at least two consecutive v1 flushes succeed.
+	w := NewWriterBuilder().
+		SetMemorySizeLimit(512).
+		SetBlockSize(256).
+		SetPropSizeDistance(64).
+		SetCompression(CompressionZstd).
+		Build(store, "prefix", "writer-1")
+
+	for i := range 200 {
+		k := fmt.Appendf(nil, "k-%05d", i)
+		v := fmt.Appendf(nil, "v-%05d-payload", i)
+		require.NoError(t, w.WriteRow(ctx, k, v, nil))
+	}
+	require.NoError(t, w.Close(ctx))
+
+	// Enumerate data files the writer produced (skip stat/dup files) and
+	// assert each one begins with the v1 zstd magic header.
+	dataFiles, statFiles, err := getKVAndStatFilesByScan(ctx, store, "prefix")
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(dataFiles), 2,
+		"test must produce at least 2 data files to exercise the multi-flush boundary-callback closure path")
+	require.Equal(t, len(dataFiles), len(statFiles))
+	for _, f := range dataFiles {
+		blob, err := store.ReadFile(ctx, f)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(blob), fileHeaderLen)
+		version, algo, ok := parseFileHeader(blob[:fileHeaderLen])
+		require.True(t, ok, "data file %s missing v1 header", f)
+		require.Equal(t, uint8(fileFormatV1), version, "data file %s wrong version", f)
+		require.Equal(t, uint8(compressionAlgoZstd), algo, "data file %s wrong algo", f)
+	}
+	// Stat files must also carry the v1 header; the statsReader dispatches
+	// on that prefix to decode v1-encoded props.
+	for _, f := range statFiles {
+		blob, err := store.ReadFile(ctx, f)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(blob), fileHeaderLen)
+		version, algo, ok := parseFileHeader(blob[:fileHeaderLen])
+		require.True(t, ok, "stat file %s missing v1 header", f)
+		require.Equal(t, uint8(fileFormatV1), version, "stat file %s wrong version", f)
+		require.Equal(t, uint8(compressionAlgoZstd), algo, "stat file %s wrong algo", f)
+	}
+}
