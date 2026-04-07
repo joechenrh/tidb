@@ -65,7 +65,9 @@ func (s *KeyValueStore) addEncodedData(data []byte) error {
 
 	s.offset += uint64(len(data))
 	if s.rc != nil {
-		s.rc.onNextEncodedData(data, s.offset)
+		if err := s.rc.onNextEncodedData(data, s.offset); err != nil {
+			return err
+		}
 	}
 
 	return nil

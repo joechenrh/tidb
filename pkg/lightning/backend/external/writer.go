@@ -127,10 +127,16 @@ type rangePropertiesCollector struct {
 	currProp     *rangeProperty
 	propSizeDist uint64
 	propKeysDist uint64
+	// onBoundary, if non-nil, is invoked synchronously after a new prop is
+	// finalized and appended to props. The callback may inspect or mutate
+	// the just-finalized prop (e.g. to fill in compressedSize/offset for v1
+	// compressed data files). Returning an error aborts the calling
+	// addEncodedData and propagates the error to the writer.
+	onBoundary func(finalizedProp *rangeProperty) error
 }
 
 // size: the file size after adding 'data'
-func (rc *rangePropertiesCollector) onNextEncodedData(data []byte, size uint64) {
+func (rc *rangePropertiesCollector) onNextEncodedData(data []byte, size uint64) error {
 	keyLen := binary.BigEndian.Uint64(data)
 	key := data[2*lengthBytes : 2*lengthBytes+keyLen]
 
@@ -146,12 +152,18 @@ func (rc *rangePropertiesCollector) onNextEncodedData(data []byte, size uint64) 
 		rc.currProp.keys >= rc.propKeysDist {
 		newProp := *rc.currProp
 		rc.props = append(rc.props, &newProp)
+		if rc.onBoundary != nil {
+			if err := rc.onBoundary(&newProp); err != nil {
+				return err
+			}
+		}
 		// reset currProp, and start to update this prop.
 		rc.currProp.firstKey = nil
 		rc.currProp.offset = size
 		rc.currProp.keys = 0
 		rc.currProp.size = 0
 	}
+	return nil
 }
 
 func (rc *rangePropertiesCollector) onFileEnd() {

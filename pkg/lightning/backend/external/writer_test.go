@@ -891,3 +891,41 @@ func TestRandPartitionedPrefix(t *testing.T) {
 	require.True(t, isValidPartition([]byte("p00000000")))
 	require.True(t, isValidPartition([]byte("p11110000")))
 }
+
+func TestRangePropertiesCollector_OnBoundaryCallbackFires(t *testing.T) {
+	rc := &rangePropertiesCollector{
+		props:        nil,
+		currProp:     &rangeProperty{},
+		propSizeDist: 4, // tiny so the boundary fires after one short kv
+		propKeysDist: 1024,
+	}
+	var fired int
+	rc.onBoundary = func(p *rangeProperty) error {
+		fired++
+		p.compressedSize = 99 // pretend we compressed; the test only checks wiring
+		return nil
+	}
+
+	// One encoded KV: key="ab", val="xy". Use the existing encodeToBuf helper
+	// to get the layout right.
+	encoded := make([]byte, 8+8+2+2)
+	encodeToBuf(encoded, []byte("ab"), []byte("xy"))
+
+	require.NoError(t, rc.onNextEncodedData(encoded, uint64(len(encoded))))
+	require.Equal(t, 1, fired)
+	require.Len(t, rc.props, 1)
+	require.EqualValues(t, 99, rc.props[0].compressedSize)
+}
+
+func TestRangePropertiesCollector_OnBoundaryNilNoOp(t *testing.T) {
+	rc := &rangePropertiesCollector{
+		props:        nil,
+		currProp:     &rangeProperty{},
+		propSizeDist: 1024 * 1024,
+		propKeysDist: 8 * 1024,
+	}
+	encoded := make([]byte, 8+8+2+2)
+	encodeToBuf(encoded, []byte("ab"), []byte("xy"))
+	require.NoError(t, rc.onNextEncodedData(encoded, uint64(len(encoded))))
+	require.Empty(t, rc.props)
+}
