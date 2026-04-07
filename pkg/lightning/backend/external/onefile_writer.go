@@ -262,7 +262,9 @@ func (w *OneFileWriter) doWriteRow(ctx context.Context, idxKey, idxVal []byte) e
 			return errors.Errorf("failed to allocate kv buffer: %d", length)
 		}
 		// 2. write statistics if one kvBuffer is used.
-		w.kvStore.finish()
+		if err := w.kvStore.finish(); err != nil {
+			return err
+		}
 		encodedStat := w.rc.encode()
 		_, err := w.statWriter.Write(ctx, encodedStat)
 		if err != nil {
@@ -342,7 +344,9 @@ func (w *OneFileWriter) closeImpl(ctx context.Context) (err error) {
 	}
 	if w.dataWriter != nil {
 		// 1. write remaining statistic.
-		w.kvStore.finish()
+		if err = w.kvStore.finish(); err != nil {
+			return err
+		}
 		encodedStat := w.rc.encode()
 		_, err = w.statWriter.Write(ctx, encodedStat)
 		if err != nil {
@@ -365,7 +369,9 @@ func (w *OneFileWriter) closeImpl(ctx context.Context) (err error) {
 		}
 	}
 	if w.dupWriter != nil {
-		w.dupKVStore.finish()
+		if err = w.dupKVStore.finish(); err != nil {
+			return err
+		}
 		if err3 := w.dupWriter.Close(ctx); err3 != nil {
 			err = err3
 			w.logger.Error("Close dup writer failed", zap.Error(err))

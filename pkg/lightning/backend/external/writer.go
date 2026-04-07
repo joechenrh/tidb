@@ -735,7 +735,9 @@ func (w *Writer) flushSortedKVs(ctx context.Context, dupLocs []membuf.SliceLocat
 		}
 	}
 
-	kvStore.finish()
+	if err = kvStore.finish(); err != nil {
+		return "", "", "", err
+	}
 	encodedStat := w.rc.encode()
 	statSize := len(encodedStat)
 	_, err = statWriter.Write(ctx, encodedStat)
@@ -793,7 +795,9 @@ func (w *Writer) writeDupKVs(ctx context.Context, kvLocs []membuf.SliceLocation)
 			return "", err
 		}
 	}
-	dupStore.finish()
+	if err := dupStore.finish(); err != nil {
+		return "", err
+	}
 	err = dupWriter.Close(ctx)
 	dupWriter = nil
 	if err != nil {

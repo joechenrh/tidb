@@ -17,6 +17,8 @@ package external
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -101,4 +103,80 @@ func TestSegmentCompressor_FlushTwoSegments(t *testing.T) {
 	got2, err := dec.DecodeAll(frame2, nil)
 	require.NoError(t, err)
 	require.Equal(t, seg2, got2)
+}
+
+func TestKeyValueStore_CompressedRoundTrip(t *testing.T) {
+	w := &fakeObjectWriter{}
+	rc := &rangePropertiesCollector{
+		props:        nil,
+		currProp:     &rangeProperty{},
+		propSizeDist: 32, // small so we get multiple segments
+		propKeysDist: 1024,
+	}
+	c := newSegmentCompressor()
+	defer c.release()
+	c.physOffset = uint64(fileHeaderLen)
+
+	store := NewKeyValueStore(context.Background(), w, rc)
+	store.WithCompressor(c)
+	rc.onBoundary = func(p *rangeProperty) error {
+		return c.flushSegment(context.Background(), w, p, p.totalSize())
+	}
+
+	// Write enough KVs to produce at least 3 segments at propSizeDist=32.
+	const nKVs = 64
+	wantPairs := make([][2][]byte, 0, nKVs)
+	for i := 0; i < nKVs; i++ {
+		k := fmt.Appendf(nil, "key-%04d", i)
+		v := fmt.Appendf(nil, "val-%04d-payload", i)
+		require.NoError(t, store.addRawKV(k, v))
+		wantPairs = append(wantPairs, [2][]byte{k, v})
+	}
+	require.NoError(t, store.finish())
+	// finish must also flush any trailing partial segment, so the last prop
+	// in rc.props gets compressedSize set.
+	require.NotEmpty(t, rc.props)
+	for i, p := range rc.props {
+		require.NotZero(t, p.compressedSize, "prop %d has zero compressedSize after finish()", i)
+	}
+
+	// Decode every frame back and concatenate; the result should equal the
+	// raw KV stream we expected to write.
+	dec, err := zstd.NewReader(nil)
+	require.NoError(t, err)
+	defer dec.Close()
+
+	all := w.buf.Bytes()
+	var decoded []byte
+	cursor := uint64(0)
+	for _, p := range rc.props {
+		// p.offset is physical, but in this test the writer started at
+		// physOffset = fileHeaderLen (we did not pre-write a header to the
+		// fakeObjectWriter), so the first frame is at relative offset 0.
+		// Compare relative.
+		relStart := p.offset - uint64(fileHeaderLen)
+		require.Equal(t, cursor, relStart, "frame %d not contiguous", relStart)
+		frame := all[cursor : cursor+p.compressedSize]
+		got, err := dec.DecodeAll(frame, nil)
+		require.NoError(t, err)
+		decoded = append(decoded, got...)
+		cursor += p.compressedSize
+	}
+
+	// Walk decoded buffer and pull out (key, value) pairs to compare.
+	gotPairs := make([][2][]byte, 0, nKVs)
+	pos := 0
+	for pos < len(decoded) {
+		klen := binary.BigEndian.Uint64(decoded[pos : pos+8])
+		vlen := binary.BigEndian.Uint64(decoded[pos+8 : pos+16])
+		k := decoded[pos+16 : pos+16+int(klen)]
+		v := decoded[pos+16+int(klen) : pos+16+int(klen)+int(vlen)]
+		gotPairs = append(gotPairs, [2][]byte{k, v})
+		pos += 16 + int(klen) + int(vlen)
+	}
+	require.Equal(t, len(wantPairs), len(gotPairs))
+	for i := range wantPairs {
+		require.Equal(t, wantPairs[i][0], gotPairs[i][0])
+		require.Equal(t, wantPairs[i][1], gotPairs[i][1])
+	}
 }

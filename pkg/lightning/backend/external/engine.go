@@ -578,7 +578,10 @@ func (e *Engine) closeDupWriterAsNeeded(ctx context.Context) error {
 	}
 	kvStore, writer := e.dupKVStore, e.dupWriter
 	e.dupKVStore, e.dupWriter = nil, nil
-	kvStore.finish()
+	if err := kvStore.finish(); err != nil {
+		logutil.Logger(ctx).Error("finish dup kv store failed", zap.Error(err))
+		return err
+	}
 	if err := writer.Close(ctx); err != nil {
 		logutil.Logger(ctx).Error("close dup writer failed", zap.Error(err))
 		return err
