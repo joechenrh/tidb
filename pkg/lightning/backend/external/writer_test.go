@@ -980,3 +980,82 @@ func TestWriter_CompressedFlushHasFileHeader(t *testing.T) {
 		require.Equal(t, uint8(compressionAlgoZstd), algo, "stat file %s wrong algo", f)
 	}
 }
+
+// TestWriter_CompressedEndToEnd writes KVs through Writer with v1 compression,
+// then for every (data, stat) file pair the Writer flushed it walks the v1
+// read path: statsReader (asserting v1 dispatch and non-zero compressedSize on
+// every prop) plus SegmentKVReader for the data. The union of decoded KVs
+// across all flushed file pairs MUST equal the input set exactly. This is the
+// multi-flush parallel of TestOneFileWriter_CompressedRoundTrip and gives the
+// shallow header check in TestWriter_CompressedFlushHasFileHeader real teeth.
+func TestWriter_CompressedEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	store := objstore.NewMemStorage()
+
+	// Tight memSizeLimit + many rows forces Writer to flush multiple
+	// (data, stat) file pairs, exercising the per-flush header write +
+	// per-flush compressor lifecycle path.
+	w := NewWriterBuilder().
+		SetMemorySizeLimit(2*1024).
+		SetBlockSize(256).
+		SetPropSizeDistance(48).
+		SetPropKeysDistance(8).
+		SetCompression(CompressionZstd).
+		Build(store, "rt", "writer-rt")
+
+	const kvCnt = 200
+	want := make(map[string]string, kvCnt)
+	for i := range kvCnt {
+		k := fmt.Sprintf("k-%05d", i)
+		v := fmt.Sprintf("v-%05d-payloadpayload", i)
+		require.NoError(t, w.WriteRow(ctx, []byte(k), []byte(v), nil))
+		want[k] = v
+	}
+	require.NoError(t, w.Close(ctx))
+
+	// Enumerate every (data, stat) file pair via the existing helper.
+	dataFiles, statFiles, err := getKVAndStatFilesByScan(ctx, store, "rt")
+	require.NoError(t, err)
+	require.NotEmpty(t, dataFiles)
+	require.Equal(t, len(dataFiles), len(statFiles))
+	require.GreaterOrEqual(t, len(dataFiles), 2,
+		"test must produce at least 2 data files to exercise the multi-flush path")
+
+	got := make(map[string]string, kvCnt)
+	for i := range dataFiles {
+		// Read the stat file via statsReader and verify v1 dispatch.
+		sr, err := newStatsReader(ctx, store, statFiles[i], 1024)
+		require.NoError(t, err)
+		require.EqualValues(t, fileFormatV1, sr.version())
+		var props []*rangeProperty
+		for {
+			p, perr := sr.nextProp()
+			if perr != nil {
+				require.ErrorIs(t, perr, io.EOF)
+				break
+			}
+			props = append(props, p)
+		}
+		require.NoError(t, sr.Close())
+		require.NotEmpty(t, props)
+		for j, p := range props {
+			require.NotZero(t, p.compressedSize,
+				"file %s prop %d has zero compressedSize", statFiles[i], j)
+		}
+
+		// Read the data file via SegmentKVReader (the v1 read path).
+		r := newSegmentKVReader(ctx, store, dataFiles[i], props)
+		for {
+			k, v, kerr := r.NextKV()
+			if kerr != nil {
+				require.ErrorIs(t, kerr, io.EOF)
+				break
+			}
+			// string() copies the underlying bytes, so it is safe even though
+			// NextKV returns slices that alias into the segment buffer.
+			got[string(k)] = string(v)
+		}
+		require.NoError(t, r.Close())
+	}
+	require.Equal(t, want, got)
+}
