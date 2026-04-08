@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -179,4 +180,56 @@ func TestKeyValueStore_CompressedRoundTrip(t *testing.T) {
 		require.Equal(t, wantPairs[i][0], gotPairs[i][0])
 		require.Equal(t, wantPairs[i][1], gotPairs[i][1])
 	}
+}
+
+// failingWriter is an objectio.Writer that fails after N successful writes.
+// Used to pin the "write-before-mutate" invariant in segmentCompressor.flushSegment:
+// a failed write MUST NOT advance physOffset or mutate the finalized prop.
+type failingWriter struct {
+	failAfter int
+	written   int
+	buf       bytes.Buffer
+}
+
+func (f *failingWriter) Write(_ context.Context, p []byte) (int, error) {
+	f.written++
+	if f.written > f.failAfter {
+		return 0, errors.New("injected write error")
+	}
+	return f.buf.Write(p)
+}
+func (f *failingWriter) Close(_ context.Context) error { return nil }
+
+func TestSegmentCompressor_WriteErrorPropagates(t *testing.T) {
+	c := newSegmentCompressor()
+	defer c.release()
+	c.physOffset = uint64(fileHeaderLen)
+
+	c.rawBuf = append(c.rawBuf, bytes.Repeat([]byte("a"), 64)...)
+
+	// failAfter=0 means EVERY Write call fails.
+	w := &failingWriter{failAfter: 0}
+	prop := &rangeProperty{}
+	err := c.flushSegment(context.Background(), w, prop, 64)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "injected write error")
+
+	// Post-failure invariants: state MUST NOT have advanced.
+	require.EqualValues(t, fileHeaderLen, c.physOffset,
+		"physOffset must not advance on a failed write")
+	require.Zero(t, prop.compressedSize,
+		"prop.compressedSize must not be set on a failed write")
+	require.Zero(t, prop.offset,
+		"prop.offset must not be set on a failed write")
+
+	// rawBuf MUST still hold the original 64 bytes — a failed flushSegment
+	// MUST NOT trim rawBuf, because a future retry (or Close path) would
+	// otherwise lose the unencoded bytes.
+	require.Equal(t, 64, len(c.rawBuf),
+		"rawBuf must not be trimmed on a failed write")
+
+	// No bytes should have been written to the fake writer's buffer because
+	// the failing writer returns (0, err) before storing anything.
+	require.Equal(t, 0, w.buf.Len(),
+		"failing writer must not have accepted any bytes")
 }
