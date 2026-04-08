@@ -1194,10 +1194,12 @@ const (
 	// TiDBCloudStorageURI used to set a cloud storage uri for ddl add index and import into.
 	TiDBCloudStorageURI = "tidb_cloud_storage_uri"
 	// TiDBGlobalSortCompression selects the on-disk format for global-sort
-	// encode-and-sort intermediate files. "none" (default) keeps the historical
-	// raw format. "zstd" enables per-segment zstd compression on the writers.
-	// The reader path auto-detects the format from a file-level magic byte and
-	// does not consult this variable, which makes rolling upgrades safe.
+	// encode-and-sort intermediate files. "zstd" (default) enables per-segment
+	// zstd compression on the writers; "none" keeps the historical raw format
+	// as an escape hatch if compression ever causes regressions. The reader
+	// path auto-detects the format from a file-level magic byte and does not
+	// consult this variable, which makes rolling upgrades safe in either
+	// direction.
 	TiDBGlobalSortCompression = "tidb_global_sort_compression"
 	// TiDBAutoBuildStatsConcurrency is the number of concurrent workers to automatically analyze tables or partitions.
 	// It is very similar to the `tidb_build_stats_concurrency` variable, but it is used for the auto analyze feature.

@@ -3034,7 +3034,7 @@ var defaultSysVars = []*SysVar{
 		vardef.CloudStorageURI.Store(val)
 		return nil
 	}},
-	{Scope: vardef.ScopeGlobal | vardef.ScopeSession, Name: vardef.TiDBGlobalSortCompression, Value: "none", Type: vardef.TypeEnum, PossibleValues: []string{"none", "zstd"}},
+	{Scope: vardef.ScopeGlobal | vardef.ScopeSession, Name: vardef.TiDBGlobalSortCompression, Value: "zstd", Type: vardef.TypeEnum, PossibleValues: []string{"none", "zstd"}},
 	{Scope: vardef.ScopeSession, Name: vardef.TiDBConstraintCheckInPlacePessimistic, Value: BoolToOnOff(config.GetGlobalConfig().PessimisticTxn.ConstraintCheckInPlacePessimistic), Type: vardef.TypeBool,
 		SetSession: func(s *SessionVars, val string) error {
 			s.ConstraintCheckInPlacePessimistic = TiDBOptOn(val)

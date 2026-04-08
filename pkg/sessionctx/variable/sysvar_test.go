@@ -2009,7 +2009,7 @@ func TestSkipInitIsUsed(t *testing.T) {
 func TestTiDBGlobalSortCompressionRegistered(t *testing.T) {
 	sv := GetSysVar(vardef.TiDBGlobalSortCompression)
 	require.NotNil(t, sv)
-	require.Equal(t, "none", sv.Value)
+	require.Equal(t, "zstd", sv.Value)
 	require.Equal(t, vardef.TypeEnum, sv.Type)
 	require.True(t, sv.HasGlobalScope())
 	require.True(t, sv.HasSessionScope())
