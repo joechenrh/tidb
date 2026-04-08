@@ -74,7 +74,7 @@ func getReadRangeFromProps(
 	jobKeys [][]byte,
 	paths []string,
 	exStorage storeapi.Storage,
-) (_ []ReadRange, err error) {
+) (_ []ReadRange, _ []uint8, err error) {
 	logger := logutil.Logger(ctx)
 	task := log.BeginTask(logger, "seek props offsets")
 	defer func() {
@@ -86,13 +86,18 @@ func getReadRangeFromProps(
 		starts[i] = kv.Key(jobKeys[i])
 	}
 	if len(starts) == 0 {
-		return []ReadRange{}, nil
+		return []ReadRange{}, nil, nil
 	}
 
 	offsetsPerFile := make([][][2]uint64, len(paths))
 	for i := range offsetsPerFile {
 		offsetsPerFile[i] = make([][2]uint64, len(starts))
 	}
+	// fileVersions carries the v0/v1 format tag per data file, extracted
+	// from the companion stat file's magic header. Writers set the same
+	// header on both the data and stat file in each flush, so the stat
+	// file's version is authoritative for its paired data file.
+	fileVersions := make([]uint8, len(paths))
 
 	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
 	eg.SetLimit(getReadRangeFromPropsConcurrency)
@@ -106,6 +111,7 @@ func getReadRangeFromProps(
 				return errors.Trace(err2)
 			}
 			defer r.Close()
+			fileVersions[i] = r.version()
 
 			keyIdx := 0
 			curKey := starts[keyIdx]
@@ -135,7 +141,17 @@ func getReadRangeFromProps(
 					offsetsPerFile[i][keyIdx] = offsetsPerFile[i][keyIdx-1]
 					curKey = starts[keyIdx]
 				}
-				offsetsPerFile[i][keyIdx] = [2]uint64{p.offset, p.offset + p.totalSize()}
+				// For v1 (compressed) files, p.offset is a physical byte
+				// offset and p.compressedSize is the zstd frame length, so
+				// the next prop starts at p.offset + p.compressedSize.
+				// For v0 (raw) files, p.compressedSize is zero and the
+				// next prop starts at p.offset + p.totalSize() (the
+				// uncompressed record bytes).
+				endOffset := p.offset + p.totalSize()
+				if p.compressedSize > 0 {
+					endOffset = p.offset + p.compressedSize
+				}
+				offsetsPerFile[i][keyIdx] = [2]uint64{p.offset, endOffset}
 				p, err3 = r.nextProp()
 				if err3 == nil {
 					firstKey = kv.Key(p.firstKey)
@@ -145,7 +161,7 @@ func getReadRangeFromProps(
 	}
 
 	if err = eg.Wait(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	readRangesPerKey := make([]ReadRange, len(starts))
@@ -157,7 +173,7 @@ func getReadRangeFromProps(
 			readRangesPerKey[i].End[j] = offsetsPerFile[j][i][1]
 		}
 	}
-	return readRangesPerKey, nil
+	return readRangesPerKey, fileVersions, nil
 }
 
 // GetAllFileNames returns files with the same non-partitioned dir.

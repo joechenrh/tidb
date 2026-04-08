@@ -129,12 +129,16 @@ func MergeOverlappingFilesV2(
 		now := time.Now()
 
 		var readRanges []ReadRange
-		readRanges, err = getReadRangeFromProps(
+		var fileVersions []uint8
+		readRanges, fileVersions, err = getReadRangeFromProps(
 			ctx, [][]byte{curStart, curEnd}, statFilesOfGroup, store)
 		if err != nil {
 			return err
 		}
 		cachedReaders := make([]cachedReader, len(dataFilesOfGroup))
+		for i := range cachedReaders {
+			cachedReaders[i].setFormat(fileVersions[i])
+		}
 
 		err1 = readAllData(
 			ctx,

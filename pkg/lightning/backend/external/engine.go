@@ -519,11 +519,14 @@ func (e *Engine) LoadIngestData(
 	currBatchSize := int(e.workerConcurrency.Load())
 	logutil.Logger(ctx).Info("load ingest data", zap.Int("current batchSize", currBatchSize))
 
-	readRangesPerKey, err := getReadRangeFromProps(ctx, e.jobKeys, e.statsFiles, e.storage)
+	readRangesPerKey, fileVersions, err := getReadRangeFromProps(ctx, e.jobKeys, e.statsFiles, e.storage)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	cachedReaders := make([]cachedReader, len(e.dataFiles))
+	for i := range cachedReaders {
+		cachedReaders[i].setFormat(fileVersions[i])
+	}
 	defer func() {
 		if closeErr := closeCachedReaders(cachedReaders); err == nil && closeErr != nil {
 			err = closeErr

@@ -176,12 +176,16 @@ func TestReadLargeFile(t *testing.T) {
 	startKey := []byte("key000000")
 	maxKey := []byte("key004998")
 	endKey := []byte("key004999")
-	readRanges, err := getReadRangeFromProps(ctx, [][]byte{startKey, endKey}, stats, memStore)
+	readRanges, fileVersions, err := getReadRangeFromProps(ctx, [][]byte{startKey, endKey}, stats, memStore)
 	require.NoError(t, err)
 
+	cachedReaders := make([]cachedReader, len(datas))
+	for i := range cachedReaders {
+		cachedReaders[i].setFormat(fileVersions[i])
+	}
 	err = readAllData(
 		ctx, memStore, datas,
-		make([]cachedReader, len(datas)),
+		cachedReaders,
 		startKey, endKey,
 		readRanges[0].Start,
 		readRanges[1].End,
@@ -220,7 +224,7 @@ func TestReadAllDataReuseSequentialReaderAcrossBatches(t *testing.T) {
 		[]byte("key002500"),
 		[]byte("key004999"),
 	}
-	readRanges, err := getReadRangeFromProps(ctx, jobKeys, stats, store)
+	readRanges, fileVersions, err := getReadRangeFromProps(ctx, jobKeys, stats, store)
 	require.NoError(t, err)
 
 	smallBlockBufPool := membuf.NewPool(
@@ -232,6 +236,9 @@ func TestReadAllDataReuseSequentialReaderAcrossBatches(t *testing.T) {
 		membuf.WithBlockSize(ConcurrentReaderBufferSizePerConc),
 	)
 	cachedReaders := make([]cachedReader, len(datas))
+	for i := range cachedReaders {
+		cachedReaders[i].setFormat(fileVersions[i])
+	}
 	defer func() {
 		require.NoError(t, closeCachedReaders(cachedReaders))
 	}()
@@ -453,7 +460,7 @@ func TestReadAllData_V1Files(t *testing.T) {
 	startKey := expected[0].Key
 	endKey := append(bytes.Clone(expected[len(expected)-1].Key), 0) // exclusive upper bound
 
-	readRanges, err := getReadRangeFromProps(ctx, [][]byte{startKey, endKey}, stats, memStore)
+	readRanges, fileVersions, err := getReadRangeFromProps(ctx, [][]byte{startKey, endKey}, stats, memStore)
 	require.NoError(t, err)
 
 	smallBlockBufPool := membuf.NewPool(
@@ -465,6 +472,9 @@ func TestReadAllData_V1Files(t *testing.T) {
 		membuf.WithBlockSize(ConcurrentReaderBufferSizePerConc),
 	)
 	cachedReaders := make([]cachedReader, len(datas))
+	for i := range cachedReaders {
+		cachedReaders[i].setFormat(fileVersions[i])
+	}
 	defer func() {
 		require.NoError(t, closeCachedReaders(cachedReaders))
 	}()

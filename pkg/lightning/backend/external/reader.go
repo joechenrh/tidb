@@ -24,11 +24,13 @@ import (
 	"time"
 
 	"github.com/docker/go-units"
+	"github.com/klauspost/compress/zstd"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/lightning/log"
 	"github.com/pingcap/tidb/pkg/lightning/membuf"
 	"github.com/pingcap/tidb/pkg/metrics"
 	"github.com/pingcap/tidb/pkg/objstore"
+	"github.com/pingcap/tidb/pkg/objstore/objectio"
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/logutil"
@@ -268,6 +270,112 @@ func (r *sequentialReader) close() (err error) {
 	return err
 }
 
+// rangedV1Reader reads v1 (zstd-compressed) data files over a specific
+// physical byte range and implements the fileReader interface for use
+// inside cachedReader. It opens the underlying store.Reader at
+// [startOffset, endOffset), wraps it in a streaming zstd decoder, and
+// iterates KVs from the decompressed bytes. Unlike sequentialReader, a
+// rangedV1Reader is bound to one byte range and is NOT reused across
+// batches; cachedReader closes and reopens it per batch.
+type rangedV1Reader struct {
+	source  objectio.Reader
+	decoder *zstd.Decoder
+
+	reserved    bool
+	reservedKey []byte
+	reservedVal []byte
+}
+
+// newRangedV1Reader opens `dataFile` over [startOffset, endOffset) and
+// returns a reader that iterates KVs from a streaming zstd decoder. The
+// caller MUST have already verified the file is v1 (e.g. via
+// detectDataFileFormat).
+//
+// Clamping rules for degenerate ranges (both come from
+// getReadRangeFromProps's behavior when the requested key is outside the
+// file's key coverage):
+//
+//   - startOffset < fileHeaderLen means getReadRangeFromProps returned the
+//     zero-initialized offset because the requested start key was before
+//     any prop in this file. We clamp to fileHeaderLen (the position of
+//     the first segment) so the zstd decoder sees a valid frame header.
+//   - endOffset <= fileHeaderLen (after clamping) means the batch does not
+//     overlap any segment in this file; we return an empty-EOF reader
+//     without touching the underlying storage.
+func newRangedV1Reader(
+	ctx context.Context,
+	store storeapi.Storage,
+	dataFile string,
+	startOffset, endOffset int64,
+) (*rangedV1Reader, error) {
+	if startOffset < int64(fileHeaderLen) {
+		startOffset = int64(fileHeaderLen)
+	}
+	if endOffset <= startOffset {
+		// Empty range: return a reader that immediately returns io.EOF.
+		return &rangedV1Reader{}, nil
+	}
+	sr, err := store.Open(ctx, dataFile, &storeapi.ReaderOption{
+		StartOffset: &startOffset,
+		EndOffset:   &endOffset,
+	})
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	dec, err := zstd.NewReader(sr)
+	if err != nil {
+		_ = sr.Close()
+		return nil, errors.Trace(err)
+	}
+	return &rangedV1Reader{source: sr, decoder: dec}, nil
+}
+
+func (r *rangedV1Reader) nextKV(smallBlockBuf *membuf.Buffer) (key, value []byte, err error) {
+	if r.reserved {
+		r.reserved = false
+		key = smallBlockBuf.AddBytes(r.reservedKey)
+		value = smallBlockBuf.AddBytes(r.reservedVal)
+		r.reservedKey = nil
+		r.reservedVal = nil
+		return key, value, nil
+	}
+	if r.decoder == nil {
+		// Constructed with an empty [startOffset, endOffset) range — nothing to decode.
+		return nil, nil, io.EOF
+	}
+
+	var lenBuf [2 * lengthBytes]byte
+	if _, err := io.ReadFull(r.decoder, lenBuf[:]); err != nil {
+		return nil, nil, err
+	}
+	keyLen := int(binary.BigEndian.Uint64(lenBuf[0:lengthBytes]))
+	valLen := int(binary.BigEndian.Uint64(lenBuf[lengthBytes : 2*lengthBytes]))
+	body := smallBlockBuf.AllocBytes(keyLen + valLen)
+	if _, err := io.ReadFull(r.decoder, body); err != nil {
+		return nil, nil, noEOF(err)
+	}
+	return body[:keyLen], body[keyLen:], nil
+}
+
+func (r *rangedV1Reader) reserve(key, value []byte) {
+	r.reserved = true
+	r.reservedKey = bytes.Clone(key)
+	r.reservedVal = bytes.Clone(value)
+}
+
+func (r *rangedV1Reader) close() error {
+	if r.decoder != nil {
+		r.decoder.Close()
+		r.decoder = nil
+	}
+	if r.source != nil {
+		err := r.source.Close()
+		r.source = nil
+		return err
+	}
+	return nil
+}
+
 // concurrentReader reads data from multiple concurrent file range read tasks.
 type concurrentReader struct {
 	ctx context.Context
@@ -422,15 +530,40 @@ func (r *concurrentReader) reserve([]byte, []byte) {}
 
 // cachedReader keeps a file reader across readAllData calls so sequential reads
 // can resume from the previous batch boundary without reopening the file.
-// Only sequential readers are reused; concurrent readers always read a fresh
-// byte range into new buffers and are recreated per batch.
+// Only v0 sequential readers are reused; v0 concurrent readers and all v1
+// ranged readers always read a fresh byte range into new buffers and are
+// recreated per batch.
 type cachedReader struct {
 	r                fileReader
 	lastIsConcurrent bool
+	// lastIsV1 is true if the most recently opened reader was a ranged v1
+	// reader. v1 readers are bound to a specific physical byte range and
+	// cannot be reused across batches, so canReuse returns false whenever
+	// the last call to open was for a v1 file.
+	lastIsV1 bool
+	// formatKnown is set when the caller has already told us the file's
+	// format via setFormat (typically because getReadRangeFromProps read
+	// the companion stat file and returned the per-file version). When
+	// not set, open() probes the data file itself via
+	// detectDataFileFormat — that extra Open defeats the sequential-reader
+	// reuse optimisation, so callers SHOULD set it up front.
+	formatKnown bool
+	formatIsV1  bool
 }
 
-func (cr *cachedReader) canReuse(isConcurrent bool) bool {
-	return !isConcurrent && !cr.lastIsConcurrent && cr.r != nil
+// setFormat records the data file's format on this cachedReader without
+// opening it. Callers that already know the format (from reading the
+// companion stat file) MUST call setFormat before the first open(); this
+// avoids an extra store.Open on the data file that would double-count
+// opens in the sequential-reuse scenario.
+func (cr *cachedReader) setFormat(version uint8) {
+	cr.formatKnown = true
+	cr.formatIsV1 = version == fileFormatV1
+}
+
+func (cr *cachedReader) canReuse(isConcurrent, isV1 bool) bool {
+	return !isConcurrent && !isV1 &&
+		!cr.lastIsConcurrent && !cr.lastIsV1 && cr.r != nil
 }
 
 func (cr *cachedReader) open(
@@ -440,24 +573,41 @@ func (cr *cachedReader) open(
 	startOffset, endOffset int64,
 	largeBlockBuf *membuf.Buffer,
 ) error {
+	// Detect the file format if the caller did not already provide it.
+	// Callers that go through getReadRangeFromProps (engine.go,
+	// merge_v2.go, testutil.go, TestReadAllData_V1Files) should call
+	// setFormat beforehand so this probe is skipped. Other callers fall
+	// back to probing the data file directly; that costs one extra
+	// store.Open but is still correct.
+	if !cr.formatKnown {
+		version, err := detectDataFileFormat(ctx, store, dataFile)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		cr.setFormat(version)
+	}
+	isV1 := cr.formatIsV1
+
 	concurrentRead := false
-	bufSize := int64(ConcurrentReaderBufferSizePerConc)
-	concurrency := (endOffset - startOffset + bufSize - 1) / bufSize
-	if concurrency >= int64(readAllDataConcThreshold) {
-		concurrentRead = true
+	if !isV1 {
+		bufSize := int64(ConcurrentReaderBufferSizePerConc)
+		concurrency := (endOffset - startOffset + bufSize - 1) / bufSize
+		if concurrency >= int64(readAllDataConcThreshold) {
+			concurrentRead = true
+		}
+
+		// only log for files with expected concurrency > 1, to avoid too many logs
+		if concurrency > 1 {
+			logutil.Logger(ctx).Info("found hotspot file in readAllData",
+				zap.String("filename", dataFile),
+				zap.Int64("startOffset", startOffset),
+				zap.Int64("endOffset", endOffset),
+				zap.Int64("concurrency", concurrency),
+			)
+		}
 	}
 
-	// only log for files with expected concurrency > 1, to avoid too many logs
-	if concurrency > 1 {
-		logutil.Logger(ctx).Info("found hotspot file in readAllData",
-			zap.String("filename", dataFile),
-			zap.Int64("startOffset", startOffset),
-			zap.Int64("endOffset", endOffset),
-			zap.Int64("concurrency", concurrency),
-		)
-	}
-
-	if cr.canReuse(concurrentRead) {
+	if cr.canReuse(concurrentRead, isV1) {
 		return nil
 	}
 
@@ -466,7 +616,16 @@ func (cr *cachedReader) open(
 		return err
 	}
 
-	if concurrentRead {
+	switch {
+	case isV1:
+		cr.r, err = newRangedV1Reader(
+			ctx,
+			store,
+			dataFile,
+			startOffset,
+			endOffset,
+		)
+	case concurrentRead:
 		cr.r, err = newConcurrentReader(
 			ctx,
 			store,
@@ -475,7 +634,7 @@ func (cr *cachedReader) open(
 			endOffset,
 			largeBlockBuf,
 		)
-	} else {
+	default:
 		cr.r, err = newSequentialReader(
 			ctx,
 			store,
@@ -489,6 +648,7 @@ func (cr *cachedReader) open(
 	}
 
 	cr.lastIsConcurrent = concurrentRead
+	cr.lastIsV1 = isV1
 	return nil
 }
 
@@ -498,6 +658,7 @@ func (cr *cachedReader) close() (err error) {
 		cr.r = nil
 	}
 	cr.lastIsConcurrent = false
+	cr.lastIsV1 = false
 	return err
 }
 

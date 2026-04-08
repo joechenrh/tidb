@@ -102,13 +102,13 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	paths := []string{file1, file2}
 
 	// single key between props
-	got, err := getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5")}, paths, store)
+	got, _, err := getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{10, 20}, got[0].Start)
 	require.Equal(t, []uint64{36, 46}, got[0].End)
 
 	// two keys between props
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5"), []byte("key2.6")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5"), []byte("key2.6")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{10, 20}, got[0].Start)
 	require.Equal(t, []uint64{36, 46}, got[0].End)
@@ -116,13 +116,13 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	require.Equal(t, []uint64{36, 46}, got[1].End)
 
 	// key exactly on a prop boundary
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{30, 20}, got[0].Start)
 	require.Equal(t, []uint64{56, 46}, got[0].End)
 
 	// two keys, second exactly on a prop boundary
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5"), []byte("key3")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key2.5"), []byte("key3")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{10, 20}, got[0].Start)
 	require.Equal(t, []uint64{36, 46}, got[0].End)
@@ -130,19 +130,19 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	require.Equal(t, []uint64{56, 46}, got[1].End)
 
 	// key below all props
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key0")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key0")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{0, 0}, got[0].Start)
 	require.Equal(t, []uint64{0, 0}, got[0].End)
 
 	// key exactly on first prop
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{10, 0}, got[0].Start)
 	require.Equal(t, []uint64{36, 0}, got[0].End)
 
 	// two keys: one below all, one on first prop
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key0"), []byte("key1")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key0"), []byte("key1")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{0, 0}, got[0].Start)
 	require.Equal(t, []uint64{0, 0}, got[0].End)
@@ -150,13 +150,13 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	require.Equal(t, []uint64{36, 0}, got[1].End)
 
 	// key above all props
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key999")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key999")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{50, 40}, got[0].Start)
 	require.Equal(t, []uint64{76, 66}, got[0].End)
 
 	// two identical keys above all props
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key999"), []byte("key999")}, paths, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key999"), []byte("key999")}, paths, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{50, 40}, got[0].Start)
 	require.Equal(t, []uint64{76, 66}, got[0].End)
@@ -169,7 +169,7 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	require.NoError(t, err)
 	err = w3.Close(ctx)
 	require.NoError(t, err)
-	got, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, []string{file1, file2, file3}, store)
+	got, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key3")}, []string{file1, file2, file3}, store)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{30, 20, 0}, got[0].Start)
 	require.Equal(t, []uint64{56, 46, 0}, got[0].End)
@@ -188,7 +188,7 @@ func TestGetReadRangeFromPropsEmptyJobKeys(t *testing.T) {
 	err = writer.Close(ctx)
 	require.NoError(t, err)
 
-	got, err := getReadRangeFromProps(ctx, nil, []string{"/test-empty-job-keys"}, store)
+	got, _, err := getReadRangeFromProps(ctx, nil, []string{"/test-empty-job-keys"}, store)
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
@@ -222,7 +222,7 @@ func TestGetReadRangeFromPropsLimitsParallelRead(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, paths, store)
+		_, _, err := getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, paths, store)
 		errCh <- err
 	}()
 
