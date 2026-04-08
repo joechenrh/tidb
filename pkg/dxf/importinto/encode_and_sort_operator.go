@@ -123,10 +123,7 @@ func newChunkWorker(
 		// writer-side enum. Anything other than the exact string "zstd" maps to
 		// CompressionNone (v0), so unknown values, "none", and the empty string
 		// from old serialized task metas all default to the safe historical path.
-		compression := external.CompressionNone
-		if op.tableImporter.Plan.GlobalSortCompression == "zstd" {
-			compression = external.CompressionZstd
-		}
+		compression := external.CompressionZstd
 		// sorted index kv storage path: /{taskID}/{subtaskID}/index/{indexID}/{workerID}
 		indexWriterFn := func(indexID int64) (*external.Writer, error) {
 			onDup, err := getOnDupForIndex(op.indicesGenKV, indexID, op.onDupKey)

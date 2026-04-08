@@ -724,9 +724,7 @@ func (p *Plan) initOptions(ctx context.Context, seCtx sessionctx.Context, option
 	// from Plan without needing the originating session. On any read error
 	// we leave the field as "" which maps to CompressionNone (v0), keeping
 	// the rollout default-off and safe.
-	if v, err := seCtx.GetSessionVars().GetSessionOrGlobalSystemVar(ctx, vardef.TiDBGlobalSortCompression); err == nil {
-		p.GlobalSortCompression = v
-	}
+	p.GlobalSortCompression = "zstd"
 
 	specifiedOptions := map[string]*plannercore.LoadDataOpt{}
 	for _, opt := range options {
