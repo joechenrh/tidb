@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/klauspost/compress/zstd"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/pkg/objstore/objectio"
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
 )
 
@@ -140,6 +141,96 @@ func (r *SegmentKVReader) Close() error {
 	if r.decoder != nil {
 		zstdDecoderPool.Put(r.decoder)
 		r.decoder = nil
+	}
+	return nil
+}
+
+// StreamingV1KVReader reads KV pairs from a v1 (zstd-compressed) data file
+// sequentially from beginning to end. Unlike SegmentKVReader (which seeks to
+// per-segment byte ranges based on a pre-computed []*rangeProperty),
+// StreamingV1KVReader requires only the data file path: it opens the file,
+// skips the 6-byte header, and wraps the rest in a streaming zstd decoder.
+// zstd frames are self-delimiting, so a concatenation of segment frames
+// decodes into the same byte sequence as reading each segment individually.
+//
+// This reader is used where the caller wants every KV in the file in order
+// and does NOT have the companion stat file (or its props) in scope — e.g.
+// the merge step (NewMergeKVIter) and the conflict-resolution file reader
+// (ReadKVFilesAsync). It has no concurrent-prefetch mode; parallelism across
+// files is the caller's responsibility.
+type StreamingV1KVReader struct {
+	source  objectio.Reader // underlying ranged storage reader
+	decoder *zstd.Decoder   // owns its own Decoder; not pooled because it wraps a persistent Reader
+	kvBuf   []byte          // reusable scratch for parsing a single KV body
+}
+
+// newStreamingV1KVReader opens `name` in `store`, skips the 6-byte v1 header,
+// and returns a reader that iterates KVs via a streaming zstd decoder over the
+// remaining bytes. Callers MUST call Close(). It is the caller's responsibility
+// to confirm the file is v1 (e.g. via detectDataFileFormat) before calling.
+func newStreamingV1KVReader(ctx context.Context, store storeapi.Storage, name string) (*StreamingV1KVReader, error) {
+	// Open the file from offset 0 to EOF. Explicit StartOffset = 0 to match
+	// how other readers call Open in this package.
+	startOffset := int64(0)
+	sr, err := store.Open(ctx, name, &storeapi.ReaderOption{
+		StartOffset: &startOffset,
+	})
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	// Skip the 6-byte file header. We trust the caller verified the format,
+	// so a short read here is a hard error.
+	hdr := make([]byte, fileHeaderLen)
+	if _, err := io.ReadFull(sr, hdr); err != nil {
+		_ = sr.Close()
+		return nil, errors.Annotatef(err, "StreamingV1KVReader: read file header for %s", name)
+	}
+	if version, _, ok := parseFileHeader(hdr); !ok || version != fileFormatV1 {
+		_ = sr.Close()
+		return nil, errors.Errorf("StreamingV1KVReader: file %s is not v1 (bad or missing header)", name)
+	}
+	dec, err := zstd.NewReader(sr)
+	if err != nil {
+		_ = sr.Close()
+		return nil, errors.Trace(err)
+	}
+	return &StreamingV1KVReader{source: sr, decoder: dec}, nil
+}
+
+// NextKV reads the next (key, value) pair. Returns (nil, nil, io.EOF) at the
+// end of the file. Slices are backed by an internal buffer that is reused on
+// each call, so callers that need to retain the bytes MUST copy them.
+func (r *StreamingV1KVReader) NextKV() (key, val []byte, err error) {
+	var lenBuf [2 * lengthBytes]byte
+	if _, err := io.ReadFull(r.decoder, lenBuf[:]); err != nil {
+		// io.EOF at a record boundary is the clean end-of-stream.
+		return nil, nil, err
+	}
+	keyLen := int(binary.BigEndian.Uint64(lenBuf[0:lengthBytes]))
+	valLen := int(binary.BigEndian.Uint64(lenBuf[lengthBytes : 2*lengthBytes]))
+	need := keyLen + valLen
+	if cap(r.kvBuf) < need {
+		r.kvBuf = make([]byte, need)
+	} else {
+		r.kvBuf = r.kvBuf[:need]
+	}
+	if _, err := io.ReadFull(r.decoder, r.kvBuf); err != nil {
+		return nil, nil, noEOF(err)
+	}
+	return r.kvBuf[:keyLen], r.kvBuf[keyLen:], nil
+}
+
+// Close tears down the streaming decoder and the underlying storage reader.
+// Safe to call multiple times.
+func (r *StreamingV1KVReader) Close() error {
+	if r.decoder != nil {
+		r.decoder.Close()
+		r.decoder = nil
+	}
+	if r.source != nil {
+		err := r.source.Close()
+		r.source = nil
+		return err
 	}
 	return nil
 }

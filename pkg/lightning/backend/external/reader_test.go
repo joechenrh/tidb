@@ -304,3 +304,215 @@ func TestReadKVFilesAsync(t *testing.T) {
 
 	require.Equal(t, expectedKVs, readKVs)
 }
+
+// writeCompressedFilesForTest writes `kvCnt` KVs via a Writer in v1 mode and
+// returns the resulting data / stat file paths plus the original expected
+// KVs in write order. Used by the end-to-end v1 read-path tests below.
+func writeCompressedFilesForTest(t *testing.T, ctx context.Context, memStore *objstore.MemStorage, prefix string, kvCnt int) ([]string, []string, []common.KvPair) {
+	t.Helper()
+	var summary *WriterSummary
+	w := NewWriterBuilder().
+		SetMemorySizeLimit(1024).
+		SetBlockSize(256).
+		SetPropSizeDistance(64).
+		SetPropKeysDistance(8).
+		SetCompression(CompressionZstd).
+		SetOnCloseFunc(func(s *WriterSummary) { summary = s }).
+		Build(memStore, prefix, "writer-v1")
+	expected := make([]common.KvPair, kvCnt)
+	for i := range kvCnt {
+		expected[i] = common.KvPair{
+			Key: fmt.Appendf(nil, "k-%05d", i),
+			Val: fmt.Appendf(nil, "v-%05d-payloadpayload", i),
+		}
+		require.NoError(t, w.WriteRow(ctx, expected[i].Key, expected[i].Val, nil))
+	}
+	require.NoError(t, w.Close(ctx))
+	require.NotNil(t, summary)
+	datas, stats := getKVAndStatFiles(summary)
+	require.NotEmpty(t, datas)
+	return datas, stats, expected
+}
+
+// TestNewMergeKVIter_V1Files asserts that NewMergeKVIter merges v1 zstd
+// files correctly end-to-end via the auto-detect dispatch. MergeSortStepMeta
+// does not carry stat files, so this is the path that fixes the Codex
+// no-ship finding (merge step cannot consume compressed intermediates).
+func TestNewMergeKVIter_V1Files(t *testing.T) {
+	ctx := context.Background()
+	memStore := objstore.NewMemStorage()
+
+	datas, _, expected := writeCompressedFilesForTest(t, ctx, memStore, "/rt-merge", 200)
+	require.GreaterOrEqual(t, len(datas), 2,
+		"test must produce at least 2 v1 data files to exercise the merge dispatch path")
+
+	slices.SortFunc(expected, func(a, b common.KvPair) int {
+		return bytes.Compare(a.Key, b.Key)
+	})
+
+	offsets := make([]uint64, len(datas))
+	iter, err := NewMergeKVIter(ctx, datas, offsets, memStore, 1024, false, 1)
+	require.NoError(t, err)
+	defer func() { _ = iter.Close() }()
+
+	got := make([]common.KvPair, 0, len(expected))
+	for iter.Next() {
+		got = append(got, common.KvPair{
+			Key: bytes.Clone(iter.Key()),
+			Val: bytes.Clone(iter.Value()),
+		})
+	}
+	require.NoError(t, iter.Error())
+	require.Equal(t, expected, got)
+}
+
+// TestNewMergeKVIter_MixedV0V1 asserts that NewMergeKVIter correctly merges
+// a set containing both v0 and v1 files. Rolling upgrades and partial
+// backfills can plausibly leave the merge step with a mixed set.
+func TestNewMergeKVIter_MixedV0V1(t *testing.T) {
+	ctx := context.Background()
+	memStore := objstore.NewMemStorage()
+
+	// v1 half: even-indexed keys.
+	var v1Summary *WriterSummary
+	v1w := NewWriterBuilder().
+		SetMemorySizeLimit(1024).
+		SetBlockSize(256).
+		SetPropSizeDistance(64).
+		SetPropKeysDistance(8).
+		SetCompression(CompressionZstd).
+		SetOnCloseFunc(func(s *WriterSummary) { v1Summary = s }).
+		Build(memStore, "/rt-mixed-v1", "writer-v1")
+	// v0 half: odd-indexed keys.
+	var v0Summary *WriterSummary
+	v0w := NewWriterBuilder().
+		SetMemorySizeLimit(1024).
+		SetBlockSize(256).
+		SetPropSizeDistance(64).
+		SetPropKeysDistance(8).
+		SetOnCloseFunc(func(s *WriterSummary) { v0Summary = s }).
+		Build(memStore, "/rt-mixed-v0", "writer-v0")
+
+	const totalKVs = 120
+	expected := make([]common.KvPair, 0, totalKVs)
+	for i := range totalKVs {
+		kv := common.KvPair{
+			Key: fmt.Appendf(nil, "k-%05d", i),
+			Val: fmt.Appendf(nil, "v-%05d-payload", i),
+		}
+		expected = append(expected, kv)
+		if i%2 == 0 {
+			require.NoError(t, v1w.WriteRow(ctx, kv.Key, kv.Val, nil))
+		} else {
+			require.NoError(t, v0w.WriteRow(ctx, kv.Key, kv.Val, nil))
+		}
+	}
+	require.NoError(t, v1w.Close(ctx))
+	require.NoError(t, v0w.Close(ctx))
+
+	v1Datas, _ := getKVAndStatFiles(v1Summary)
+	v0Datas, _ := getKVAndStatFiles(v0Summary)
+	require.NotEmpty(t, v1Datas)
+	require.NotEmpty(t, v0Datas)
+	datas := append(append([]string(nil), v1Datas...), v0Datas...)
+
+	slices.SortFunc(expected, func(a, b common.KvPair) int {
+		return bytes.Compare(a.Key, b.Key)
+	})
+
+	offsets := make([]uint64, len(datas))
+	iter, err := NewMergeKVIter(ctx, datas, offsets, memStore, 1024, false, 1)
+	require.NoError(t, err)
+	defer func() { _ = iter.Close() }()
+
+	got := make([]common.KvPair, 0, len(expected))
+	for iter.Next() {
+		got = append(got, common.KvPair{
+			Key: bytes.Clone(iter.Key()),
+			Val: bytes.Clone(iter.Value()),
+		})
+	}
+	require.NoError(t, iter.Error())
+	require.Equal(t, expected, got)
+}
+
+// TestReadAllData_V1Files asserts that readAllData can consume v1
+// zstd-compressed intermediate files in the ingest step. For v1 files,
+// getReadRangeFromProps returns physical compressed byte offsets, and the
+// cachedReader is expected to dispatch to a v1-aware ranged reader (added
+// in a follow-up commit on top of this rebase).
+func TestReadAllData_V1Files(t *testing.T) {
+	ctx := context.Background()
+	memStore := objstore.NewMemStorage()
+
+	datas, stats, expected := writeCompressedFilesForTest(t, ctx, memStore, "/rt-readall", 200)
+
+	slices.SortFunc(expected, func(a, b common.KvPair) int {
+		return bytes.Compare(a.Key, b.Key)
+	})
+	startKey := expected[0].Key
+	endKey := append(bytes.Clone(expected[len(expected)-1].Key), 0) // exclusive upper bound
+
+	readRanges, err := getReadRangeFromProps(ctx, [][]byte{startKey, endKey}, stats, memStore)
+	require.NoError(t, err)
+
+	smallBlockBufPool := membuf.NewPool(
+		membuf.WithBlockNum(0),
+		membuf.WithBlockSize(smallBlockSize),
+	)
+	largeBlockBufPool := membuf.NewPool(
+		membuf.WithBlockNum(0),
+		membuf.WithBlockSize(ConcurrentReaderBufferSizePerConc),
+	)
+	cachedReaders := make([]cachedReader, len(datas))
+	defer func() {
+		require.NoError(t, closeCachedReaders(cachedReaders))
+	}()
+	output := &memKVsAndBuffers{}
+	err = readAllData(
+		ctx, memStore, datas, cachedReaders,
+		startKey, endKey,
+		readRanges[0].Start,
+		readRanges[1].End,
+		smallBlockBufPool, largeBlockBufPool, output)
+	require.NoError(t, err)
+	output.build(ctx)
+
+	got := make([]common.KvPair, 0, len(expected))
+	for i := range output.kvs {
+		got = append(got, common.KvPair{
+			Key: bytes.Clone(output.kvs[i].Key),
+			Val: bytes.Clone(output.kvs[i].Value),
+		})
+	}
+	slices.SortFunc(got, func(a, b common.KvPair) int {
+		return bytes.Compare(a.Key, b.Key)
+	})
+	require.Equal(t, expected, got)
+}
+
+// TestReadKVFilesAsync_V1Files asserts that ReadKVFilesAsync (used by
+// conflict-resolution paths) can consume v1 files via the streaming v1
+// reader dispatch in readOneKVFile2Ch.
+func TestReadKVFilesAsync_V1Files(t *testing.T) {
+	ctx := context.Background()
+	memStore := objstore.NewMemStorage()
+
+	datas, _, expected := writeCompressedFilesForTest(t, ctx, memStore, "/rt-async-v1", 150)
+
+	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
+	kvCh := ReadKVFilesAsync(egCtx, eg, memStore, datas)
+
+	got := make([]common.KvPair, 0, len(expected))
+	for kv := range kvCh {
+		got = append(got, common.KvPair{
+			Key: bytes.Clone(kv.Key),
+			Val: bytes.Clone(kv.Value),
+		})
+	}
+	require.NoError(t, eg.Wait())
+	// ReadKVFilesAsync preserves write order within each file, and
+	// writeCompressedFilesForTest writes in ascending key order, so the
+	// expected order is already the ascending-key order.
+	require.Equal(t, expected, got)
+}

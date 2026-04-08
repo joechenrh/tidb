@@ -162,7 +162,19 @@ func ReadKVFilesAsync(ctx context.Context, eg *util.ErrorGroupWithRecover,
 }
 
 func readOneKVFile2Ch(ctx context.Context, store storeapi.Storage, file string, outCh chan *KVPair) error {
-	reader, err := NewKVReader(ctx, file, store, 0, 3*DefaultReadBufferSize)
+	// Probe the first fileHeaderLen bytes to pick the right reader. v0 uses
+	// the streaming KVReader; v1 uses StreamingV1KVReader (zstd frames are
+	// self-delimiting, so sequential decode works without a props slice).
+	version, err := detectDataFileFormat(ctx, store, file)
+	if err != nil {
+		return err
+	}
+	var reader kvStream
+	if version == fileFormatV1 {
+		reader, err = newStreamingV1KVReader(ctx, store, file)
+	} else {
+		reader, err = NewKVReader(ctx, file, store, 0, 3*DefaultReadBufferSize)
+	}
 	if err != nil {
 		return err
 	}

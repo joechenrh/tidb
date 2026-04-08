@@ -16,6 +16,7 @@ package external
 
 import (
 	"context"
+	"io"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/objstore/storeapi"
@@ -28,6 +29,41 @@ import (
 type kvStream interface {
 	NextKV() (key, val []byte, err error)
 	Close() error
+}
+
+// detectDataFileFormat probes the first fileHeaderLen bytes of a data file
+// and reports whether it is a v1 (zstd-compressed) file or a v0 (raw) file.
+// It is safe to call on either format because a raw v0 data file begins with
+// an 8-byte big-endian key length, whose high 4 bytes can never collide with
+// the ASCII "TGSC" magic for any realistic key size (< ~6 PB). Callers use
+// this to dispatch to the right kvStream implementation when no companion
+// statsReader is in scope.
+//
+// Returns (fileFormatV0, nil) on any read that is too short, lacks the
+// magic, or encounters a non-fatal read error. A propagated error is
+// returned only when the underlying storage Open fails hard.
+func detectDataFileFormat(ctx context.Context, store storeapi.Storage, name string) (uint8, error) {
+	startOffset := int64(0)
+	endOffset := int64(fileHeaderLen)
+	rd, err := store.Open(ctx, name, &storeapi.ReaderOption{
+		StartOffset: &startOffset,
+		EndOffset:   &endOffset,
+	})
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
+	defer func() { _ = rd.Close() }()
+	buf := make([]byte, fileHeaderLen)
+	n, readErr := io.ReadFull(rd, buf)
+	if readErr != nil || n < fileHeaderLen {
+		// Too short or read error: treat as v0. A real empty/corrupt file
+		// will surface its error to the KV reader that follows.
+		return fileFormatV0, nil
+	}
+	if version, _, ok := parseFileHeader(buf); ok && version == fileFormatV1 {
+		return fileFormatV1, nil
+	}
+	return fileFormatV0, nil
 }
 
 // openKVStream returns a kvStream for the given data file. fileVersion comes
