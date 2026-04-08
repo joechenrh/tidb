@@ -761,6 +761,10 @@ func (w *Writer) flushSortedKVs(ctx context.Context, dupLocs []membuf.SliceLocat
 
 	var compressor *segmentCompressor
 	if w.compressionAlgo == CompressionZstd {
+		logger.Info("flushSortedKVs: writing v1 zstd file header",
+			zap.String("data-file", dataFile),
+			zap.String("stat-file", statFile),
+		)
 		if _, err = dataWriter.Write(ctx, fileHeaderV1Zstd); err != nil {
 			return "", "", "", err
 		}
@@ -770,6 +774,11 @@ func (w *Writer) flushSortedKVs(ctx context.Context, dupLocs []membuf.SliceLocat
 		compressor = newSegmentCompressor()
 		compressor.physOffset = uint64(fileHeaderLen)
 		defer compressor.release()
+	} else {
+		logger.Info("flushSortedKVs: writing v0 raw file (no compression)",
+			zap.String("data-file", dataFile),
+			zap.Int("compression-algo", int(w.compressionAlgo)),
+		)
 	}
 
 	kvStore := NewKeyValueStore(ctx, dataWriter, w.rc)

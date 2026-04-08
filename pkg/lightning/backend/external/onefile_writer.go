@@ -146,6 +146,10 @@ func (w *OneFileWriter) lazyInitWriter(ctx context.Context) (err error) {
 	// half-initialized state where closeImpl would try to flush a writer
 	// whose first bytes are missing.
 	if w.compressionAlgo == CompressionZstd {
+		w.logger.Info("OneFileWriter lazyInit: writing v1 zstd file header",
+			zap.String("data-file", dataFile),
+			zap.String("stat-file", statFile),
+		)
 		if _, err = dataWriter.Write(ctx, fileHeaderV1Zstd); err != nil {
 			_ = dataWriter.Close(ctx)
 			_ = statWriter.Close(ctx)
@@ -158,6 +162,11 @@ func (w *OneFileWriter) lazyInitWriter(ctx context.Context) (err error) {
 		}
 		w.compressor = newSegmentCompressor()
 		w.compressor.physOffset = uint64(fileHeaderLen)
+	} else {
+		w.logger.Info("OneFileWriter lazyInit: writing v0 raw file (no compression)",
+			zap.String("data-file", dataFile),
+			zap.Int("compression-algo", int(w.compressionAlgo)),
+		)
 	}
 
 	w.dataFile, w.dataWriter = dataFile, dataWriter

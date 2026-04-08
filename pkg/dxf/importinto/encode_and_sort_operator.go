@@ -124,6 +124,12 @@ func newChunkWorker(
 		// CompressionNone (v0), so unknown values, "none", and the empty string
 		// from old serialized task metas all default to the safe historical path.
 		compression := external.CompressionZstd
+		op.logger.Info("encode-and-sort worker created",
+			zap.Int64("task-id", op.taskID),
+			zap.Int64("subtask-id", op.subtaskID),
+			zap.String("plan-global-sort-compression", op.tableImporter.Plan.GlobalSortCompression),
+			zap.Int("compression-algo", int(compression)),
+		)
 		// sorted index kv storage path: /{taskID}/{subtaskID}/index/{indexID}/{workerID}
 		indexWriterFn := func(indexID int64) (*external.Writer, error) {
 			onDup, err := getOnDupForIndex(op.indicesGenKV, indexID, op.onDupKey)
