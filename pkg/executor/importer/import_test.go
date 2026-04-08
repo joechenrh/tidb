@@ -16,6 +16,7 @@ package importer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -612,4 +613,26 @@ func TestGetDefMaxEngineSize(t *testing.T) {
 	} else {
 		require.Equal(t, config.ByteSize(100*units.GiB), getDefMaxEngineSize())
 	}
+}
+
+// TestPlan_GlobalSortCompression_JSONRoundTrip proves that the new
+// GlobalSortCompression field survives the submitter -> executor JSON
+// round-trip path used by TaskMeta serialization. If this test ever
+// regresses (e.g. someone adds json:"-" to the field) the executor side
+// will silently fall back to v0 at runtime, which is exactly what the
+// Codex adversarial review flagged as a hard-to-diagnose failure mode.
+func TestPlan_GlobalSortCompression_JSONRoundTrip(t *testing.T) {
+	original := &Plan{
+		GlobalSortCompression: "zstd",
+		CloudStorageURI:       "s3://bucket/prefix",
+	}
+	bs, err := json.Marshal(original)
+	require.NoError(t, err)
+	// Must actually appear in the JSON body, not be dropped by a tag.
+	require.Contains(t, string(bs), `"GlobalSortCompression":"zstd"`)
+
+	var decoded Plan
+	require.NoError(t, json.Unmarshal(bs, &decoded))
+	require.Equal(t, "zstd", decoded.GlobalSortCompression)
+	require.Equal(t, "s3://bucket/prefix", decoded.CloudStorageURI)
 }

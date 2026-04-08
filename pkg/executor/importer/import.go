@@ -551,6 +551,12 @@ func NewImportPlan(ctx context.Context, userSctx sessionctx.Context, plan *plann
 	if err := p.initParameters(plan); err != nil {
 		return nil, err
 	}
+	// Debug: log the snapshotted compression value so the submitter node
+	// makes it obvious in the logs what gets shipped to the executor.
+	logutil.Logger(ctx).Info("IMPORT INTO plan built (submitter side)",
+		zap.String("plan-global-sort-compression", p.GlobalSortCompression),
+		zap.String("cloud-storage-uri", p.CloudStorageURI),
+	)
 	return p, nil
 }
 

@@ -105,6 +105,14 @@ func getTableImporter(
 	store tidbkv.Storage,
 	logger *zap.Logger,
 ) (*importer.TableImporter, error) {
+	// Debug: log what came out of the task meta on the executor side. If
+	// the submitter logged plan-global-sort-compression="zstd" but this
+	// line logs "", JSON serialization is dropping the field.
+	logger.Info("getTableImporter (executor side): taskMeta.Plan deserialized",
+		zap.Int64("task-id", taskID),
+		zap.String("plan-global-sort-compression", taskMeta.Plan.GlobalSortCompression),
+		zap.String("cloud-storage-uri", taskMeta.Plan.CloudStorageURI),
+	)
 	idAlloc := kv.NewPanickingAllocators(taskMeta.Plan.TableInfo.SepAutoInc())
 	tbl, err := tables.TableFromMeta(idAlloc, taskMeta.Plan.TableInfo)
 	if err != nil {
