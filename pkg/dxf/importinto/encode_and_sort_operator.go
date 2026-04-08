@@ -119,6 +119,14 @@ func newChunkWorker(
 	if op.tableImporter.IsGlobalSort() {
 		// in case on network partition, 2 nodes might run the same subtask.
 		workerUUID := uuid.New().String()
+		// Translate the snapshotted tidb_global_sort_compression value into the
+		// writer-side enum. Anything other than the exact string "zstd" maps to
+		// CompressionNone (v0), so unknown values, "none", and the empty string
+		// from old serialized task metas all default to the safe historical path.
+		compression := external.CompressionNone
+		if op.tableImporter.Plan.GlobalSortCompression == "zstd" {
+			compression = external.CompressionZstd
+		}
 		// sorted index kv storage path: /{taskID}/{subtaskID}/index/{indexID}/{workerID}
 		indexWriterFn := func(indexID int64) (*external.Writer, error) {
 			onDup, err := getOnDupForIndex(op.indicesGenKV, indexID, op.onDupKey)
@@ -133,6 +141,7 @@ func newChunkWorker(
 				SetMemorySizeLimit(perIndexKVMemSizePerCon).
 				SetBlockSize(indexBlockSize).
 				SetOnDup(onDup).
+				SetCompression(compression).
 				SetTiKVCodec(op.tableImporter.Backend().GetTiKVCodec())
 			prefix := subtaskPrefix(op.taskID, op.subtaskID)
 			// writer id for index: index/{indexID}/{workerID}
@@ -150,6 +159,7 @@ func newChunkWorker(
 			SetMemorySizeLimit(dataKVMemSizePerCon).
 			SetBlockSize(dataBlockSize).
 			SetOnDup(getOnDupForConflictedKV(op.onDupKey)).
+			SetCompression(compression).
 			SetTiKVCodec(op.tableImporter.Backend().GetTiKVCodec())
 		prefix := subtaskPrefix(op.taskID, op.subtaskID)
 		// writer id for data: data/{workerID}

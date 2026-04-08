@@ -307,6 +307,12 @@ type Plan struct {
 	DisableTiKVImportMode bool
 	MaxEngineSize         config.ByteSize
 	CloudStorageURI       string
+	// GlobalSortCompression is the on-disk format for global-sort intermediate
+	// files. Snapshot from tidb_global_sort_compression at job submission time.
+	// Empty string or "none" means CompressionNone (v0); "zstd" means
+	// CompressionZstd (v1). Empty string keeps backward compatibility for
+	// task metas serialized before this field existed.
+	GlobalSortCompression string
 	DisablePrecheck       bool
 	GroupKey              string
 
@@ -713,6 +719,14 @@ func (p *Plan) initOptions(ctx context.Context, seCtx sessionctx.Context, option
 		return err
 	}
 	p.initDefaultOptions(ctx, targetNodeCPUCnt, seCtx.GetStore())
+	// Snapshot tidb_global_sort_compression at job submission time so the
+	// encode-and-sort writers running on remote executor nodes can read it
+	// from Plan without needing the originating session. On any read error
+	// we leave the field as "" which maps to CompressionNone (v0), keeping
+	// the rollout default-off and safe.
+	if v, err := seCtx.GetSessionVars().GetSessionOrGlobalSystemVar(ctx, vardef.TiDBGlobalSortCompression); err == nil {
+		p.GlobalSortCompression = v
+	}
 
 	specifiedOptions := map[string]*plannercore.LoadDataOpt{}
 	for _, opt := range options {
