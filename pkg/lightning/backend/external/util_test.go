@@ -175,6 +175,44 @@ func TestGetReadRangeFromProps(t *testing.T) {
 	require.Equal(t, []uint64{56, 46, 0}, got[0].End)
 }
 
+// TestGetReadRangeFromProps_V1ZeroCompressedSizeRejected locks in the
+// fail-closed behavior introduced for corrupt v1 stat files: if the stat
+// file's magic header says v1 but a prop body has compressedSize==0, the
+// old code path would have silently fallen back to the v0 totalSize()
+// formula and handed the reader a bogus byte range inside compressed
+// frames. The new code rejects such props with an explicit error instead.
+func TestGetReadRangeFromProps_V1ZeroCompressedSizeRejected(t *testing.T) {
+	ctx := context.Background()
+	store := objstore.NewMemStorage()
+
+	// Hand-craft a v1 stat file: file header magic + a single v1 prop
+	// whose compressedSize field is zero. A correctly-written v1 prop
+	// would always have compressedSize > 0 because the writer never
+	// emits a zero-byte zstd frame.
+	writer, err := store.Create(ctx, "/test-v1-corrupt", nil)
+	require.NoError(t, err)
+	_, err = writer.Write(ctx, fileHeaderV1Zstd)
+	require.NoError(t, err)
+	corruptProp := &rangeProperty{
+		firstKey:       []byte("key1"),
+		lastKey:        []byte("key1"),
+		offset:         uint64(fileHeaderLen),
+		size:           10,
+		keys:           1,
+		compressedSize: 0, // corruption: v1 must have compressedSize > 0
+	}
+	_, err = writer.Write(ctx, encodeMultiPropsV1(nil, []*rangeProperty{corruptProp}))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close(ctx))
+
+	// Search key must land on or after the prop's firstKey for the
+	// validation branch to fire; a search key strictly before the prop
+	// would short-circuit via the keyIdx advance path.
+	_, _, err = getReadRangeFromProps(ctx, [][]byte{[]byte("key1")}, []string{"/test-v1-corrupt"}, store)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "zero compressedSize")
+}
+
 func TestGetReadRangeFromPropsEmptyJobKeys(t *testing.T) {
 	ctx := context.Background()
 	store := objstore.NewMemStorage()

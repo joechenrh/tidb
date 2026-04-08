@@ -373,6 +373,32 @@ func TestNewMergeKVIter_V1Files(t *testing.T) {
 	require.Equal(t, expected, got)
 }
 
+// TestNewMergeKVIter_V1RejectsNonZeroStartOffset locks in the fail-fast
+// behavior when a caller accidentally passes a non-zero pathsStartOffset
+// for a v1 file. The merge iterator cannot honor v0 uncompressed-byte
+// offsets on a zstd stream, so silently starting from zero would produce
+// duplicate or out-of-range KVs. Instead, NewMergeKVIter surfaces the
+// mistake as an error.
+//
+// Note: this test does NOT call iter.Close() on the error path. When
+// NewMergeKVIter returns an error, the returned *MergeKVIter wraps a
+// nil internal mergeIter, and Close() would panic — that is a separate
+// pre-existing quirk of the constructor not in scope for this change.
+func TestNewMergeKVIter_V1RejectsNonZeroStartOffset(t *testing.T) {
+	ctx := context.Background()
+	memStore := objstore.NewMemStorage()
+
+	datas, _, _ := writeCompressedFilesForTest(t, ctx, memStore, "/rt-merge-rejectoff", 100)
+	require.NotEmpty(t, datas)
+
+	// Non-zero offset on a v1 file must be rejected at open time.
+	offsets := make([]uint64, len(datas))
+	offsets[0] = 128
+	_, err := NewMergeKVIter(ctx, datas, offsets, memStore, 1024, false, 1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-zero pathsStartOffset")
+}
+
 // TestNewMergeKVIter_MixedV0V1 asserts that NewMergeKVIter correctly merges
 // a set containing both v0 and v1 files. Rolling upgrades and partial
 // backfills can plausibly leave the merge step with a mixed set.

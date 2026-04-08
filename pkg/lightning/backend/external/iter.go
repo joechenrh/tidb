@@ -565,9 +565,21 @@ func NewMergeKVIter(
 			if version == fileFormatV1 {
 				// v1 merge path: sequential streaming decode over the whole
 				// file. No props needed, no concurrent prefetch — zstd frames
-				// are self-delimiting and we read from start to EOF. The
-				// pathsStartOffset hint is ignored because v1 files cannot
-				// seek mid-stream without a companion props slice.
+				// are self-delimiting and we read from start to EOF.
+				//
+				// Non-zero pathsStartOffset on a v1 file is rejected
+				// deliberately. v0 offsets are uncompressed-byte offsets,
+				// which have no meaning inside the zstd stream; a v1 reader
+				// cannot seek to a mid-stream uncompressed-byte position
+				// without companion segment metadata (and the merge step's
+				// task meta does not carry it today). Silently starting
+				// from zero would mask caller bugs and produce duplicate or
+				// out-of-range KVs, so fail fast instead.
+				if pathsStartOffset[i] != 0 {
+					return nil, errors.Errorf(
+						"NewMergeKVIter: non-zero pathsStartOffset %d is not supported for v1 file %s",
+						pathsStartOffset[i], paths[i])
+				}
 				sr, err := newStreamingV1KVReader(ctx, exStorage, paths[i])
 				if err != nil {
 					return nil, err

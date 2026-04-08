@@ -112,6 +112,7 @@ func getReadRangeFromProps(
 			}
 			defer r.Close()
 			fileVersions[i] = r.version()
+			isV1 := fileVersions[i] == fileFormatV1
 
 			keyIdx := 0
 			curKey := starts[keyIdx]
@@ -141,15 +142,31 @@ func getReadRangeFromProps(
 					offsetsPerFile[i][keyIdx] = offsetsPerFile[i][keyIdx-1]
 					curKey = starts[keyIdx]
 				}
-				// For v1 (compressed) files, p.offset is a physical byte
-				// offset and p.compressedSize is the zstd frame length, so
-				// the next prop starts at p.offset + p.compressedSize.
-				// For v0 (raw) files, p.compressedSize is zero and the
-				// next prop starts at p.offset + p.totalSize() (the
-				// uncompressed record bytes).
-				endOffset := p.offset + p.totalSize()
-				if p.compressedSize > 0 {
+				// Derive the range [start, end) covering this prop in the
+				// data file. The semantics depend on the file format:
+				//
+				//   v0: p.offset is an uncompressed stream offset; the next
+				//       prop starts at p.offset + p.totalSize() (the raw
+				//       record bytes including length headers).
+				//   v1: p.offset is the physical byte offset of this zstd
+				//       frame; p.compressedSize is the frame length, so the
+				//       next prop starts at p.offset + p.compressedSize.
+				//
+				// For v1 files we fail closed on an invalid compressedSize:
+				// treating a zero as the v0 sentinel would point the reader
+				// at arbitrary bytes inside compressed frames and surface as
+				// a cryptic zstd decode error later. Reject it here with an
+				// explicit corruption error instead.
+				var endOffset uint64
+				if isV1 {
+					if p.compressedSize == 0 {
+						return errors.Errorf(
+							"getReadRangeFromProps: v1 stat file %s has prop with zero compressedSize at offset %d",
+							paths[i], p.offset)
+					}
 					endOffset = p.offset + p.compressedSize
+				} else {
+					endOffset = p.offset + p.totalSize()
 				}
 				offsetsPerFile[i][keyIdx] = [2]uint64{p.offset, endOffset}
 				p, err3 = r.nextProp()
