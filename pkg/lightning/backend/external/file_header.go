@@ -18,9 +18,9 @@ package external
 //
 // A v1 data file and a v1 stat file both begin with a 6-byte header:
 //
-//   offset 0..3 :  magic "TGSC"  (TiDB Global Sort Compressed)
-//   offset 4    :  format version (uint8)
-//   offset 5    :  compression algorithm (uint8)
+//	offset 0..3 :  magic "TGSC"  (TiDB Global Sort Compressed)
+//	offset 4    :  format version (uint8)
+//	offset 5    :  compression algorithm (uint8)
 //
 // Files without this header are treated as v0 (raw, uncompressed) for
 // backward compatibility. The first 8 bytes of a raw file are a big-endian
