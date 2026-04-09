@@ -15,10 +15,14 @@
 package ddl
 
 import (
+	"context"
+
 	"github.com/pingcap/errors"
+	sess "github.com/pingcap/tidb/pkg/ddl/session"
 	"github.com/pingcap/tidb/pkg/infoschema"
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/sessionctx"
+	"github.com/pingcap/tidb/pkg/util"
 )
 
 // onAlterTableMode should only be called by alterTableMode, will call updateVersionAndTableInfo
@@ -97,4 +101,52 @@ func AlterTableMode(de Executor, sctx sessionctx.Context, mode model.TableMode, 
 		TableID:   tableID,
 	}
 	return de.AlterTableMode(sctx, args)
+}
+
+// SubmitAlterTableModeJob submits an AlterTableMode DDL job to the target
+// keyspace's DDL job queue via the provided session pool. This is used for
+// cross-keyspace scenarios where the caller (e.g., system keyspace scheduler)
+// needs to change a table's mode in a different keyspace (e.g., user keyspace).
+//
+// Unlike AlterTableMode which uses the local DDL executor, this function writes
+// the DDL job directly to mysql.tidb_ddl_job using the session pool, and the
+// target keyspace's DDL owner picks it up.
+//
+// This is fire-and-forget: it returns after the job is inserted but does not
+// wait for the DDL owner to execute it.
+func SubmitAlterTableModeJob(ctx context.Context, sessPool util.SessionPool, mode model.TableMode, schemaID, tableID int64, schemaName string) error {
+	job := &model.Job{
+		Version:    model.JobVersion2,
+		SchemaID:   schemaID,
+		TableID:    tableID,
+		SchemaName: schemaName,
+		Type:       model.ActionAlterTableMode,
+		BinlogInfo: &model.HistoryInfo{},
+		InvolvingSchemaInfo: []model.InvolvingSchemaInfo{
+			{
+				Database: schemaName,
+				Table:    model.InvolvingAll,
+			},
+		},
+	}
+	args := &model.AlterTableModeArgs{
+		TableMode: mode,
+		SchemaID:  schemaID,
+		TableID:   tableID,
+	}
+	jobW := NewJobWrapperWithArgs(job, args, false)
+	setJobStateToQueueing(job)
+
+	se, err := sessPool.Get()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	defer sessPool.Put(se)
+
+	ddlSe := sess.NewSession(se.(sessionctx.Context))
+	count := getRequiredGIDCount([]*JobWrapper{jobW})
+	return genGIDAndCallWithRetry(ctx, ddlSe, count, func(ids []int64) error {
+		assignGIDsForJobs([]*JobWrapper{jobW}, ids)
+		return insertDDLJobs2Table(ctx, ddlSe, jobW)
+	})
 }
