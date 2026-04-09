@@ -471,16 +471,18 @@ func (sch *importScheduler) OnDone(ctx context.Context, _ storage.TaskHandle, ta
 }
 
 func (sch *importScheduler) switchTableMode2NormalMode(ctx context.Context, taskMeta *TaskMeta, logger *zap.Logger) {
-	if !kerneltype.IsClassic() {
-		return
-	}
 	if taskMeta == nil || taskMeta.Plan.DBID == 0 || taskMeta.Plan.TableInfo == nil || taskMeta.Plan.TableInfo.ID == 0 {
 		return
 	}
-	err := sch.WithNewTxn(ctx, func(se sessionctx.Context) error {
-		return ddl.AlterTableMode(domain.GetDomain(se).DDLExecutor(), se,
-			model.TableModeNormal, taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID)
-	})
+	var err error
+	if kerneltype.IsClassic() {
+		err = sch.WithNewTxn(ctx, func(se sessionctx.Context) error {
+			return ddl.AlterTableMode(domain.GetDomain(se).DDLExecutor(), se,
+				model.TableModeNormal, taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID)
+		})
+	} else {
+		err = sch.submitAlterTableModeToTaskKS(ctx, model.TableModeNormal, taskMeta)
+	}
 	if err != nil {
 		logger.Warn(
 			"alter table mode to normal failure",
@@ -489,6 +491,31 @@ func (sch *importScheduler) switchTableMode2NormalMode(ctx context.Context, task
 			zap.Int64("tableID", taskMeta.Plan.TableInfo.ID),
 		)
 	}
+}
+
+// submitAlterTableModeToTaskKS submits an AlterTableMode DDL job to the task's
+// keyspace via cross-keyspace session pool. Used in next-gen where the scheduler
+// runs in system keyspace but the table is in a user keyspace.
+func (sch *importScheduler) submitAlterTableModeToTaskKS(ctx context.Context, mode model.TableMode, taskMeta *TaskMeta) error {
+	var sessPool util.SessionPool
+	if kv.IsUserKS(sch.TaskStore) {
+		taskKS := sch.GetTask().Keyspace
+		if err := sch.BaseScheduler.WithNewSession(func(se sessionctx.Context) error {
+			var err2 error
+			sessPool, err2 = se.GetSQLServer().GetKSSessPool(taskKS)
+			return err2
+		}); err != nil {
+			return errors.Annotatef(err, "failed to get cross keyspace session pool for %s", sch.GetTask().Keyspace)
+		}
+	} else {
+		// Task is in system keyspace, use local session pool.
+		return sch.WithNewTxn(ctx, func(se sessionctx.Context) error {
+			return ddl.AlterTableMode(domain.GetDomain(se).DDLExecutor(), se,
+				mode, taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID)
+		})
+	}
+
+	return ddl.SubmitAlterTableModeJob(ctx, sessPool, mode, taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID, taskMeta.Plan.DBName)
 }
 
 // GetEligibleInstances implements scheduler.Extension interface.
