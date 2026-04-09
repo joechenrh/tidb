@@ -196,10 +196,6 @@ func TestSchedulerExtLocalSort(t *testing.T) {
 }
 
 func TestSchedulerOnDoneCancelResetsTableMode(t *testing.T) {
-	if !kerneltype.IsClassic() {
-		t.Skip("table mode is only set in classic kernel")
-	}
-
 	store := testkit.CreateMockStore(t)
 	tk := testkit.NewTestKit(t, store)
 	tk.MustExec("use test")
