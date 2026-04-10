@@ -138,7 +138,7 @@ func TestDistSQLSharedKVRequestRace(t *testing.T) {
 		// Few iterations suffice: Go's race detector is deterministic (catches on first
 		// occurrence), and RequestBuilder.used guards reuse at build time. Keep this low
 		// to stay well under the Bazel "moderate" timeout with -race enabled.
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// index lookup
 			tk.MustQuery("select * from t force index(ic) order by c asc limit 500").Check(testkit.Rows(expects...))
 			// index merge
