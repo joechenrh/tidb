@@ -36,8 +36,10 @@ import (
 	"github.com/pingcap/tidb/pkg/lightning/verification"
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/sessionctx"
+	"github.com/pingcap/tidb/pkg/store"
 	"github.com/pingcap/tidb/pkg/util"
 	"github.com/pingcap/tidb/pkg/util/logutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 )
 
@@ -154,22 +156,33 @@ func resetTableModeOnCleanup(ctx context.Context, task *proto.Task, taskMeta *Ta
 	if err != nil {
 		return err
 	}
-	var sessPool util.SessionPool
+	var (
+		sessPool util.SessionPool
+		etcdCli  *clientv3.Client
+	)
 	if err = taskManager.WithNewSession(func(se sessionctx.Context) error {
 		var err2 error
 		sessPool, err2 = se.GetSQLServer().GetKSSessPool(task.Keyspace)
-		return err2
-	}); err != nil {
-		logutil.BgLogger().Warn(
-			"failed to get cross-KS session pool during import cleanup, skip altering table mode",
-			zap.Int64("tableID", taskMeta.Plan.TableInfo.ID),
-			zap.Error(err),
-		)
+		if err2 != nil {
+			return err2
+		}
+		taskKSStore, err2 := se.GetSQLServer().GetKSStore(task.Keyspace)
+		if err2 != nil {
+			return err2
+		}
+		etcdCli, _ = store.NewEtcdCli(taskKSStore)
 		return nil
+	}); err != nil {
+		return errors.Annotatef(err, "failed to get cross keyspace session pool for %s", task.Keyspace)
+	}
+	if etcdCli != nil {
+		defer func() {
+			_ = etcdCli.Close()
+		}()
 	}
 
-	if err = ddl.SubmitAlterTableModeJob(ctx, sessPool, model.TableModeNormal,
-		taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID, taskMeta.Plan.DBName); err != nil {
+	if err = ddl.SubmitAlterTableModeJob(ctx, sessPool, etcdCli, model.TableModeNormal,
+		taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID, taskMeta.Plan.DBName, taskMeta.Plan.TableInfo.Name.L); err != nil {
 		if !goerrors.Is(err, infoschema.ErrTableNotExists) {
 			return err
 		}

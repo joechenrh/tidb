@@ -22,6 +22,7 @@ import (
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/util"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // onAlterTableMode should only be called by alterTableMode, will call updateVersionAndTableInfo
@@ -106,7 +107,9 @@ func AlterTableMode(de Executor, sctx sessionctx.Context, mode model.TableMode, 
 // keyspace via SubmitJobsToTable. This is used for cross-keyspace scenarios
 // where the caller (e.g., system keyspace scheduler) needs to change a table's
 // mode in a different keyspace (e.g., user keyspace).
-func SubmitAlterTableModeJob(ctx context.Context, sessPool util.SessionPool, mode model.TableMode, schemaID, tableID int64, schemaName string) error {
+//
+// schemaName and tableName should be lowercase (`.L`) to match InvolvingSchemaInfo conventions.
+func SubmitAlterTableModeJob(ctx context.Context, sessPool util.SessionPool, etcdCli *clientv3.Client, mode model.TableMode, schemaID, tableID int64, schemaName, tableName string) error {
 	job := &model.Job{
 		Version:    model.JobVersion2,
 		SchemaID:   schemaID,
@@ -117,7 +120,7 @@ func SubmitAlterTableModeJob(ctx context.Context, sessPool util.SessionPool, mod
 		InvolvingSchemaInfo: []model.InvolvingSchemaInfo{
 			{
 				Database: schemaName,
-				Table:    model.InvolvingAll,
+				Table:    tableName,
 			},
 		},
 	}
@@ -127,5 +130,5 @@ func SubmitAlterTableModeJob(ctx context.Context, sessPool util.SessionPool, mod
 		TableID:   tableID,
 	}
 	jobW := NewJobWrapperWithArgs(job, args, false)
-	return SubmitJobsToTable(ctx, sessPool, []*JobWrapper{jobW})
+	return SubmitJobsToTable(ctx, sessPool, etcdCli, []*JobWrapper{jobW})
 }

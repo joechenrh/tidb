@@ -497,25 +497,46 @@ func (sch *importScheduler) switchTableMode2NormalMode(ctx context.Context, task
 // keyspace via cross-keyspace session pool. Used in next-gen where the scheduler
 // runs in system keyspace but the table is in a user keyspace.
 func (sch *importScheduler) submitAlterTableModeToTaskKS(ctx context.Context, mode model.TableMode, taskMeta *TaskMeta) error {
-	var sessPool util.SessionPool
-	if kv.IsUserKS(sch.TaskStore) {
-		taskKS := sch.GetTask().Keyspace
-		if err := sch.BaseScheduler.WithNewSession(func(se sessionctx.Context) error {
-			var err2 error
-			sessPool, err2 = se.GetSQLServer().GetKSSessPool(taskKS)
-			return err2
-		}); err != nil {
-			return errors.Annotatef(err, "failed to get cross keyspace session pool for %s", sch.GetTask().Keyspace)
-		}
-	} else {
-		// Task is in system keyspace, use local session pool.
+	if !kv.IsUserKS(sch.TaskStore) {
+		// Task is in system keyspace, use local DDL executor.
 		return sch.WithNewTxn(ctx, func(se sessionctx.Context) error {
 			return ddl.AlterTableMode(domain.GetDomain(se).DDLExecutor(), se,
 				mode, taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID)
 		})
 	}
 
-	return ddl.SubmitAlterTableModeJob(ctx, sessPool, mode, taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID, taskMeta.Plan.DBName)
+	sessPool, etcdCli, err := getCrossKSSessPoolAndEtcdCli(sch.BaseScheduler, sch.TaskStore, sch.GetTask().Keyspace)
+	if err != nil {
+		return err
+	}
+	if etcdCli != nil {
+		defer func() {
+			_ = etcdCli.Close()
+		}()
+	}
+	return ddl.SubmitAlterTableModeJob(ctx, sessPool, etcdCli, mode,
+		taskMeta.Plan.DBID, taskMeta.Plan.TableInfo.ID, taskMeta.Plan.DBName, taskMeta.Plan.TableInfo.Name.L)
+}
+
+// getCrossKSSessPoolAndEtcdCli obtains a cross-keyspace session pool and etcd
+// client for submitting DDL jobs to the target keyspace. The caller must close
+// the returned etcd client when done.
+func getCrossKSSessPoolAndEtcdCli(base *scheduler.BaseScheduler, taskStore kv.Storage, taskKS string) (util.SessionPool, *clientv3.Client, error) {
+	var sessPool util.SessionPool
+	if err := base.WithNewSession(func(se sessionctx.Context) error {
+		var err2 error
+		sessPool, err2 = se.GetSQLServer().GetKSSessPool(taskKS)
+		return err2
+	}); err != nil {
+		return nil, nil, errors.Annotatef(err, "failed to get cross keyspace session pool for %s", taskKS)
+	}
+
+	etcdCli, err := store.NewEtcdCli(taskStore)
+	if err != nil {
+		// Non-fatal: job will still be picked up by the DDL owner's polling ticker.
+		return sessPool, nil, nil
+	}
+	return sessPool, etcdCli, nil
 }
 
 // GetEligibleInstances implements scheduler.Extension interface.
