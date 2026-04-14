@@ -36,6 +36,12 @@ type node struct {
 
 	text   string
 	offset int
+
+	// litRanges holds [start, end) byte offsets of string literals
+	// within text (relative to start of text, not parser.src).
+	// When set, Text() uses these known ranges for hex encoding
+	// instead of rescanning the raw text.
+	litRanges [][2]int
 }
 
 // SetOriginTextPosition implements Node interface.
@@ -68,6 +74,15 @@ func (n *node) SetNoBackslashEscapes(val bool) {
 	}
 }
 
+// SetLitRanges sets the byte offset ranges of string literals within the
+// node's text. Each range is [start, end) relative to the start of text.
+func (n *node) SetLitRanges(ranges [][2]int) {
+	n.litRanges = ranges
+	if n.once != nil {
+		n.once = &sync.Once{} // invalidate cache
+	}
+}
+
 // Text implements Node interface.
 func (n *node) Text() string {
 	if n.once == nil {
@@ -78,7 +93,12 @@ func (n *node) Text() string {
 			n.utf8Text = n.text
 			return
 		}
-		n.utf8Text = convertBinaryStringLiterals(n.text, n.enc, n.noBackslashEscapes)
+		if n.litRanges != nil {
+			n.utf8Text = convertWithLitRanges(n.text, n.enc, n.noBackslashEscapes, n.litRanges)
+		} else {
+			// Fallback for external SetText() callers without lexer ranges
+			n.utf8Text = convertBinaryStringLiterals(n.text, n.enc, n.noBackslashEscapes)
+		}
 	})
 	return n.utf8Text
 }
@@ -117,6 +137,130 @@ func needsSpaceBeforeHexLiteral(utf8Text []byte, quoteStart int) bool {
 		return false
 	}
 	return isIdentChar(utf8Text[quoteStart-1])
+}
+
+// convertWithLitRanges hex-encodes non-printable string literals using
+// pre-recorded byte ranges from the lexer. Unlike convertBinaryStringLiterals,
+// it does not rescan the text for quote boundaries — it operates only on the
+// known litRanges, so comments and other SQL constructs are ignored entirely.
+func convertWithLitRanges(text string, enc charset.Encoding, noBackslashEscapes bool, litRanges [][2]int) string {
+	src := charset.HackSlice(text)
+
+	// Transform entire text to UTF-8.
+	utf8Text, _ := enc.Transform(nil, src, charset.OpDecodeReplace)
+
+	if len(litRanges) == 0 {
+		return charset.HackString(utf8Text)
+	}
+
+	// For non-UTF-8 encodings, character widths change during Transform
+	// (e.g. GBK 2-byte → UTF-8 3-byte), so we need a mapping from original
+	// byte offsets to UTF-8 byte offsets. For UTF-8, offsets are identical.
+	isUTF8 := enc.Tp() == charset.EncodingTpUTF8 ||
+		enc.Tp() == charset.EncodingTpUTF8MB3Strict ||
+		enc.Tp() == charset.EncodingTpASCII
+	origPos := 0
+	utf8Pos := 0
+
+	// mapOffset advances the orig→utf8 position tracker to targetOrig and
+	// returns the corresponding UTF-8 position.
+	mapOffset := func(targetOrig int) int {
+		if isUTF8 {
+			return targetOrig
+		}
+		for origPos < targetOrig && origPos < len(src) && utf8Pos < len(utf8Text) {
+			charBytes := enc.Peek(src[origPos:])
+			origStep := len(charBytes)
+			if origStep == 0 {
+				origStep = 1
+			}
+			_, utf8Step := utf8.DecodeRune(utf8Text[utf8Pos:])
+			if utf8Step == 0 {
+				utf8Step = 1
+			}
+			origPos += origStep
+			utf8Pos += utf8Step
+		}
+		return utf8Pos
+	}
+
+	var buf *bytes.Buffer
+	lastCopied := 0 // position in utf8Text up to which we've copied
+
+	for _, lr := range litRanges {
+		origStart, origEnd := lr[0], lr[1]
+		if origStart < 0 || origEnd > len(src) || origStart >= origEnd {
+			continue
+		}
+
+		// Quotes are at src[origStart] and src[origEnd-1].
+		innerStart := origStart + 1
+		innerEnd := origEnd - 1
+		if innerStart >= innerEnd {
+			continue // empty string ''
+		}
+
+		// Check printability of the content inside the quotes.
+		decoded, err := enc.Transform(nil, src[innerStart:innerEnd], charset.OpDecode)
+		if err == nil && isPrintable(decoded) {
+			continue
+		}
+
+		// Non-printable: extract content (processing escape sequences) and hex-encode.
+		quote := src[origStart]
+		content := extractLiteralContent(src, innerStart, innerEnd, quote, noBackslashEscapes)
+
+		utf8Start := mapOffset(origStart)
+		utf8End := mapOffset(origEnd)
+
+		if buf == nil {
+			buf = &bytes.Buffer{}
+			buf.Grow(len(utf8Text))
+		}
+		buf.Write(utf8Text[lastCopied:utf8Start])
+		if needsSpaceBeforeHexLiteral(utf8Text, utf8Start) {
+			buf.WriteByte(' ')
+		}
+		buf.WriteString("0x")
+		for _, b := range content {
+			buf.WriteByte(hexDigits[b>>4])
+			buf.WriteByte(hexDigits[b&0xf])
+		}
+		lastCopied = utf8End
+	}
+
+	if buf == nil {
+		return charset.HackString(utf8Text)
+	}
+	if lastCopied < len(utf8Text) {
+		buf.Write(utf8Text[lastCopied:])
+	}
+	return buf.String()
+}
+
+// extractLiteralContent extracts the decoded byte content from a string
+// literal in src[start:end], processing doubled-quote and backslash escapes.
+func extractLiteralContent(src []byte, start, end int, quote byte, noBackslashEscapes bool) []byte {
+	var content []byte
+	j := start
+	for j < end {
+		ch := src[j]
+		if ch == quote {
+			j++
+			if j < end && src[j] == quote {
+				content = append(content, quote)
+				j++
+			}
+		} else if ch == '\\' && !noBackslashEscapes && j+1 < end {
+			j++
+			content = append(content, util.UnescapeChar(src[j])...)
+			j++
+		} else {
+			content = append(content, ch)
+			j++
+		}
+	}
+	return content
 }
 
 // convertBinaryStringLiterals processes raw SQL text, converting non-printable
