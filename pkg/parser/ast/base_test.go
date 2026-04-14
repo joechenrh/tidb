@@ -102,6 +102,87 @@ func TestBinaryStringLiteralConversion(t *testing.T) {
 	}
 }
 
+func TestBinaryStringLiteralSkipsComments(t *testing.T) {
+	n := &node{}
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		// -- line comments with quotes must not corrupt the SQL
+		{
+			"-- with apostrophe",
+			"-- don't do this\nSELECT 'hello' FROM t",
+			"-- don't do this\nSELECT 'hello' FROM t",
+		},
+		{
+			"-- with commented-out SQL (even quotes)",
+			"-- SELECT * FROM t WHERE name='John'\nSELECT 1",
+			"-- SELECT * FROM t WHERE name='John'\nSELECT 1",
+		},
+		{
+			"-- double-quote in comment",
+			"-- see table \"users\"\nSELECT \"bar\" FROM t",
+			"-- see table \"users\"\nSELECT \"bar\" FROM t",
+		},
+		{
+			"-- at end of input",
+			"SELECT 1 -- don't",
+			"SELECT 1 -- don't",
+		},
+		{
+			"-- quote at end of comment line",
+			"-- ending with '\nSELECT 'hello'",
+			"-- ending with '\nSELECT 'hello'",
+		},
+		{
+			"-- without space is NOT a comment",
+			"SELECT 1 --1",
+			"SELECT 1 --1",
+		},
+		// # line comments
+		{
+			"# with apostrophe",
+			"# user's config\nSELECT 'value' FROM t",
+			"# user's config\nSELECT 'value' FROM t",
+		},
+		// /* */ block comments
+		{
+			"block comment with apostrophe",
+			"/* it's a test */ SELECT 'value' FROM t",
+			"/* it's a test */ SELECT 'value' FROM t",
+		},
+		{
+			"multi-line block comment with quote",
+			"/*\n * don't modify\n */ SELECT 'value' FROM t",
+			"/*\n * don't modify\n */ SELECT 'value' FROM t",
+		},
+		// Executable comments must NOT be skipped (quotes inside are SQL)
+		{
+			"/*! executable - binary inside",
+			"/*!80000 SELECT '\xd2\xe4' */",
+			"/*!80000 SELECT 0xd2e4 */",
+		},
+		// Real-world CDC case
+		{
+			"CREATE VIEW with comment quote",
+			"-- (don't use parenthesis)\n\nCREATE OR REPLACE VIEW v AS SELECT 'Attribute' AS t FROM t1 UNION ALL SELECT 'Reference' AS t FROM t2",
+			"-- (don't use parenthesis)\n\nCREATE OR REPLACE VIEW v AS SELECT 'Attribute' AS t FROM t1 UNION ALL SELECT 'Reference' AS t FROM t2",
+		},
+		// Binary string after comment still gets hex-encoded
+		{
+			"comment + binary string",
+			"-- don't\nSELECT '\xd2\xe4' FROM t",
+			"-- don't\nSELECT 0xd2e4 FROM t",
+		},
+	}
+	for _, tt := range tests {
+		n.SetText(charset.EncodingUTF8Impl, tt.text)
+		require.Equal(t, tt.want, n.Text(), tt.name)
+	}
+}
+
 func TestBinaryStringLiteralNoBackslashEscapes(t *testing.T) {
 	n := &node{}
 
