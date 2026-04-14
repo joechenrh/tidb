@@ -84,6 +84,10 @@ type Scanner struct {
 
 	// keepHint, if true, Scanner will keep hint when normalizing .
 	keepHint bool
+
+	// stringLitRanges records [start, end) byte offsets of each string literal
+	// token within the source text, in scan order.
+	stringLitRanges [][2]int
 }
 
 // Errors returns the errors and warns during a scan.
@@ -103,6 +107,7 @@ func (s *Scanner) reset(sql string) {
 	s.inBangComment = false
 	s.lastKeyword = 0
 	s.identifierDot = false
+	s.stringLitRanges = s.stringLitRanges[:0]
 }
 
 func (s *Scanner) stmtText() string {
@@ -768,6 +773,7 @@ func (s *Scanner) scanString() (tok int, pos Pos, lit string) {
 		if ch0 == ending {
 			if s.r.peek() != ending {
 				lit = s.buf.String()
+				s.stringLitRanges = append(s.stringLitRanges, [2]int{pos.Offset, s.r.pos().Offset})
 				return
 			}
 			s.r.inc()
