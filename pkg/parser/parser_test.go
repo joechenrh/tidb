@@ -8241,3 +8241,30 @@ func TestSplitPartition(t *testing.T) {
 	}
 	RunTest(t, cases, false, false)
 }
+
+func TestLitRangeRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		{"comment with quote", "-- don't\nSELECT 'hello' FROM t"},
+		{"block comment with quote", "/* it's a test */\nSELECT 'value' FROM t"},
+		{"CREATE VIEW with comment", "-- (don't use parenthesis)\n\nCREATE OR REPLACE VIEW v AS SELECT 'Attr' AS t FROM t1 UNION ALL SELECT 'Ref' AS t FROM t2"},
+		{"multiple string literals", "SELECT 'a', 'b', 'c' FROM t"},
+		{"no string literals", "SELECT 1 + 2"},
+	}
+
+	p := parser.New()
+	for _, tt := range tests {
+		stmts, _, err := p.ParseSQL(tt.sql)
+		require.NoError(t, err, tt.name)
+		require.NotEmpty(t, stmts, tt.name)
+
+		text := stmts[0].Text()
+		// Text() should not corrupt the SQL
+		require.Equal(t, tt.sql, text, tt.name+": Text() changed")
+		// Re-parse should succeed
+		_, _, err = p.ParseSQL(text)
+		require.NoError(t, err, tt.name+": re-parse failed")
+	}
+}

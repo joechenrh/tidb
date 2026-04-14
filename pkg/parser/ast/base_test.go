@@ -144,6 +144,85 @@ func TestBinaryStringLiteralGBK(t *testing.T) {
 	require.Equal(t, "select '筡', 'after'", n.Text(), "GBK 0x5c before quote")
 }
 
+func TestConvertWithLitRanges(t *testing.T) {
+	n := &node{}
+	tests := []struct {
+		name      string
+		text      string
+		litRanges [][2]int
+		want      string
+	}{
+		{
+			// Binary literal: '\xd2\xe4' (2 bytes) is non-printable → hex-encoded
+			// "SELECT '\xd2\xe4' FROM t": 'SELECT ' = 7 bytes (0-6), quote at 7, \xd2\xe4 at 8-9, quote at 10 → [7,11)
+			name:      "binary literal",
+			text:      "SELECT '\xd2\xe4' FROM t",
+			litRanges: [][2]int{{7, 11}},
+			want:      "SELECT 0xd2e4 FROM t",
+		},
+		{
+			// Printable literal: 'hello' → passes through unchanged
+			// "SELECT 'hello' FROM t": quote at 7, closes at 13 → [7,14)
+			name:      "printable literal",
+			text:      "SELECT 'hello' FROM t",
+			litRanges: [][2]int{{7, 14}},
+			want:      "SELECT 'hello' FROM t",
+		},
+		{
+			// Comment containing quote + printable literal: comment must NOT be corrupted
+			// "-- don't\nSELECT 'hello' FROM t": comment is 9 bytes (0-8), SELECT at 9, 'hello' at [16,23)
+			name:      "comment with quote and printable literal",
+			text:      "-- don't\nSELECT 'hello' FROM t",
+			litRanges: [][2]int{{16, 23}},
+			want:      "-- don't\nSELECT 'hello' FROM t",
+		},
+		{
+			// Comment containing quote + binary literal: binary in SQL hex-encoded, comment intact
+			// "-- don't\nSELECT '\xd2\xe4' FROM t": comment = 9 bytes, SELECT at 9, '\xd2\xe4' at [16,20)
+			name:      "comment with quote and binary literal",
+			text:      "-- don't\nSELECT '\xd2\xe4' FROM t",
+			litRanges: [][2]int{{16, 20}},
+			want:      "-- don't\nSELECT 0xd2e4 FROM t",
+		},
+		{
+			// Multiple literals, only the binary one gets hex-encoded
+			// "SELECT 'hello', '\xd2\xe4' FROM t": 'hello' at [7,14), '\xd2\xe4' at [16,20)
+			name:      "multiple literals one binary",
+			text:      "SELECT 'hello', '\xd2\xe4' FROM t",
+			litRanges: [][2]int{{7, 14}, {16, 20}},
+			want:      "SELECT 'hello', 0xd2e4 FROM t",
+		},
+		{
+			// No litRanges (nil): should just do UTF-8 transform
+			name:      "nil litRanges",
+			text:      "SELECT 1 + 2",
+			litRanges: nil,
+			want:      "SELECT 1 + 2",
+		},
+		{
+			// _binary prefix: space must be inserted before 0x to avoid _binary0x...
+			// "SELECT _binary '\xd2\xe4'": SELECT(7) + _binary (8) = 15 → quote at 15, ends at 18, [15,19)
+			name:      "_binary prefix inserts space",
+			text:      "SELECT _binary '\xd2\xe4'",
+			litRanges: [][2]int{{15, 19}},
+			want:      "SELECT _binary 0xd2e4",
+		},
+		{
+			// Empty string literal '': innerStart == innerEnd → skip (no encoding)
+			// "SELECT ''": quote at 7, closes at 8 → [7,9)
+			name:      "empty string literal skipped",
+			text:      "SELECT ''",
+			litRanges: [][2]int{{7, 9}},
+			want:      "SELECT ''",
+		},
+	}
+	for _, tt := range tests {
+		n.SetText(charset.EncodingUTF8Impl, tt.text)
+		n.SetLitRanges(tt.litRanges)
+		require.Equal(t, tt.want, n.Text(), tt.name)
+	}
+}
+
 func buildBinaryClause() string {
 	return "c1 = _binary '\xd2\xe4\xa6\xb8\xc1\xf3\xe5\xd7\xa9\xb2\xc4\xd6\xe8\xf1\xa3\xb5'"
 }
