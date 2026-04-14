@@ -158,11 +158,38 @@ func TestBinaryStringLiteralSkipsComments(t *testing.T) {
 			"/*\n * don't modify\n */ SELECT 'value' FROM t",
 			"/*\n * don't modify\n */ SELECT 'value' FROM t",
 		},
+		// -- with form-feed and vertical-tab (unicode.IsSpace matches these)
+		{
+			"-- with form-feed after dashes",
+			"--\f don't\nSELECT 'hello' FROM t",
+			"--\f don't\nSELECT 'hello' FROM t",
+		},
+		{
+			"-- with vertical-tab after dashes",
+			"--\v don't\nSELECT 'hello' FROM t",
+			"--\v don't\nSELECT 'hello' FROM t",
+		},
 		// Executable comments must NOT be skipped (quotes inside are SQL)
 		{
 			"/*! executable - binary inside",
 			"/*!80000 SELECT '\xd2\xe4' */",
 			"/*!80000 SELECT 0xd2e4 */",
+		},
+		{
+			"/*+ hint - binary inside",
+			"/*+ SET_VAR(charset='\xd2\xe4') */ SELECT 1",
+			"/*+ SET_VAR(charset=0xd2e4) */ SELECT 1",
+		},
+		// /*T! and /*M! are skipped as comments (conservative: can't check feature gates from ast)
+		{
+			"/*T! skipped as comment",
+			"/*T![unsupported] don't */ SELECT 'hello' FROM t",
+			"/*T![unsupported] don't */ SELECT 'hello' FROM t",
+		},
+		{
+			"/*M! skipped as comment",
+			"/*M! don't */ SELECT 'hello' FROM t",
+			"/*M! don't */ SELECT 'hello' FROM t",
 		},
 		// Real-world CDC case
 		{

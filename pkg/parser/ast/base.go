@@ -274,99 +274,89 @@ func convertBinaryStringLiterals(text string, enc charset.Encoding, noBackslashE
 }
 
 // skipComment checks whether the current position in utf8Text is the start of
-// a SQL comment. If so it advances both i (in utf8Text) and origIdx (in src)
-// past the comment and returns true. For each quote byte (' or ") encountered
-// inside the comment, origIdx is advanced past the corresponding byte in src so
-// that subsequent string-literal pairing stays correct.
+// a SQL comment. If so it advances *i past the comment in utf8Text and returns
+// true. While scanning the comment bytes, it also advances *origIdx past any
+// quote bytes (' or ") found inside the comment so that the dual-index pairing
+// used by the caller for string-literal matching stays correct. Bytes that are
+// not quote characters do NOT advance *origIdx.
 //
-// Recognised comment forms (matching the TiDB lexer):
-//   - "--" followed by whitespace or end-of-input: line comment to end of line
-//   - "#": line comment to end of line
-//   - "/*" NOT followed by "!", "+", "T!", "M!": block comment to "*/"
+// Recognised comment forms:
+//   - "--" followed by Unicode whitespace or end-of-input: line comment to EOL
+//     (matches lexer startWithDash which uses unicode.IsSpace)
+//   - "#": line comment to EOL
+//   - "/*" ... "*/": block comment, UNLESS the opener is "/*!" or "/*+"
+//     which are MySQL executable/hint comments whose content is parsed as SQL
 //
-// Executable comments (/*! */, /*+ */, /*T! */, /*M! */) are intentionally
-// left alone because their content is parsed as SQL.
+// TiDB-specific "/*T!" and MariaDB "/*M!" comments are always skipped here
+// because their executability depends on runtime feature gates that are not
+// available in the ast package. This is conservative: string literals inside
+// an actually-executed /*T![feature] block will not be hex-encoded by this
+// fallback path, but the primary litRange path handles them correctly.
 func skipComment(utf8Text, src []byte, i, origIdx *int) bool {
 	pos := *i
 	ch := utf8Text[pos]
 
-	// -- line comment (MySQL requires space/control/EOL after --)
+	// -- line comment (MySQL requires whitespace after --, checked via
+	// unicode.IsSpace to match the lexer's startWithDash predicate).
 	if ch == '-' && pos+1 < len(utf8Text) && utf8Text[pos+1] == '-' {
-		if pos+2 >= len(utf8Text) || isSpaceOrControl(utf8Text[pos+2]) {
-			skipLineComment(utf8Text, src, i, origIdx)
+		if pos+2 >= len(utf8Text) || unicode.IsSpace(rune(utf8Text[pos+2])) {
+			skipToEOL(utf8Text, src, i, origIdx)
 			return true
 		}
 	}
 
 	// # line comment
 	if ch == '#' {
-		skipLineComment(utf8Text, src, i, origIdx)
+		skipToEOL(utf8Text, src, i, origIdx)
 		return true
 	}
 
-	// /* */ block comment (but not executable variants)
+	// /* */ block comment — only /*! and /*+ are executable (MySQL syntax).
 	if ch == '/' && pos+1 < len(utf8Text) && utf8Text[pos+1] == '*' {
-		rest := utf8Text[pos+2:]
-		// /*! ... */ — MySQL version comment (executable)
-		// /*+ ... */ — optimizer hint
-		if len(rest) > 0 && (rest[0] == '!' || rest[0] == '+') {
-			return false
+		if pos+2 < len(utf8Text) {
+			next := utf8Text[pos+2]
+			if next == '!' || next == '+' {
+				// MySQL version comment or optimizer hint — content is SQL.
+				return false
+			}
 		}
-		// /*T! ... */ — TiDB executable comment
-		// /*M! ... */ — MariaDB comment
-		if len(rest) > 1 && (rest[0] == 'T' || rest[0] == 'M') && rest[1] == '!' {
-			return false
-		}
-		skipBlockComment(utf8Text, src, i, origIdx)
+		skipToBlockEnd(utf8Text, src, i, origIdx)
 		return true
 	}
 
 	return false
 }
 
-func isSpaceOrControl(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
-}
-
-// skipLineComment advances *i to the end of a line comment (past \n or to EOF)
-// and advances *origIdx past any quote bytes in the skipped region of src.
-func skipLineComment(utf8Text, src []byte, i, origIdx *int) {
-	start := *i
-	nlPos := bytes.IndexByte(utf8Text[start:], '\n')
-	var end int
-	if nlPos < 0 {
-		end = len(utf8Text)
-	} else {
-		end = start + nlPos + 1
-	}
-	skipCommentQuotes(utf8Text, src, start, end, origIdx)
-	*i = end
-}
-
-// skipBlockComment advances *i past a /* ... */ block comment and advances
-// *origIdx past any quote bytes in the skipped region of src.
-func skipBlockComment(utf8Text, src []byte, i, origIdx *int) {
-	start := *i
-	endMarker := bytes.Index(utf8Text[start+2:], []byte("*/"))
-	var end int
-	if endMarker < 0 {
-		end = len(utf8Text) // unterminated comment
-	} else {
-		end = start + 2 + endMarker + 2
-	}
-	skipCommentQuotes(utf8Text, src, start, end, origIdx)
-	*i = end
-}
-
-// skipCommentQuotes advances origIdx past each ' or " byte in the comment
-// region [start, end) of utf8Text. This keeps the dual-index pairing in sync
-// so that the next real string literal is matched correctly in src.
-func skipCommentQuotes(utf8Text, src []byte, start, end int, origIdx *int) {
-	for j := start; j < end; j++ {
-		ch := utf8Text[j]
+// skipToEOL advances *i to past the newline (or EOF) and advances *origIdx
+// past any quote bytes encountered along the way, in a single pass.
+func skipToEOL(utf8Text, src []byte, i, origIdx *int) {
+	for *i < len(utf8Text) {
+		ch := utf8Text[*i]
 		if ch == '\'' || ch == '"' {
 			advanceOrigTo(src, origIdx, ch)
 		}
+		*i++
+		if ch == '\n' {
+			return
+		}
+	}
+}
+
+// skipToBlockEnd advances *i past the closing "*/" (or EOF) and advances
+// *origIdx past any quote bytes encountered along the way, in a single pass.
+func skipToBlockEnd(utf8Text, src []byte, i, origIdx *int) {
+	// Skip past the opening "/*".
+	*i += 2
+	for *i < len(utf8Text) {
+		ch := utf8Text[*i]
+		if ch == '\'' || ch == '"' {
+			advanceOrigTo(src, origIdx, ch)
+		}
+		if ch == '*' && *i+1 < len(utf8Text) && utf8Text[*i+1] == '/' {
+			*i += 2 // skip past "*/"
+			return
+		}
+		*i++
 	}
 }
 
