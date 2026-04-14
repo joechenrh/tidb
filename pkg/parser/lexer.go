@@ -1092,3 +1092,15 @@ func (r *reader) skipRune(enc charset.Encoding) bool {
 	r.incN(c)
 	return c > 0
 }
+
+// litRangesFor returns string literal ranges that fall within [srcStart, srcEnd)
+// of the source text, with offsets adjusted to be relative to srcStart.
+func (s *Scanner) litRangesFor(srcStart, srcEnd int) [][2]int {
+	var result [][2]int
+	for _, r := range s.stringLitRanges {
+		if r[0] >= srcStart && r[1] <= srcEnd {
+			result = append(result, [2]int{r[0] - srcStart, r[1] - srcStart})
+		}
+	}
+	return result
+}

@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"unicode"
+	"unsafe"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/parser/ast"
@@ -103,6 +104,16 @@ type Parser struct {
 	yyVAL  *yySymType
 }
 
+// srcOffset returns the byte offset of text within parser.src.
+// text must be a substring of parser.src sharing the backing array.
+func (parser *Parser) srcOffset(text string) int {
+	if len(text) == 0 || len(parser.src) == 0 {
+		return 0
+	}
+	return int(uintptr(unsafe.Pointer(unsafe.StringData(text))) -
+		uintptr(unsafe.Pointer(unsafe.StringData(parser.src))))
+}
+
 // setNodeText sets the raw text on a parsed AST node and propagates the
 // NO_BACKSLASH_ESCAPES SQL mode so that Text() can correctly handle
 // backslash escapes when converting binary string literals to hex.
@@ -112,6 +123,14 @@ func (parser *Parser) setNodeText(n interface {
 	n.SetText(parser.lexer.client, text)
 	if setter, ok := n.(interface{ SetNoBackslashEscapes(bool) }); ok {
 		setter.SetNoBackslashEscapes(parser.lexer.sqlMode.HasNoBackslashEscapesMode())
+	}
+	// Pipe lexer-recorded string literal ranges to the node.
+	if setter, ok := n.(interface{ SetLitRanges([][2]int) }); ok {
+		srcStart := parser.srcOffset(text)
+		srcEnd := srcStart + len(text)
+		if ranges := parser.lexer.litRangesFor(srcStart, srcEnd); len(ranges) > 0 {
+			setter.SetLitRanges(ranges)
+		}
 	}
 }
 
@@ -257,7 +276,12 @@ func (parser *Parser) setLastSelectFieldText(st *ast.SelectStmt, lastEnd int) {
 	}
 	lastField := st.Fields.Fields[len(st.Fields.Fields)-1]
 	if lastField.Offset+len(lastField.OriginalText()) >= len(parser.src)-1 {
-		lastField.SetText(parser.lexer.client, parser.src[lastField.Offset:lastEnd])
+		text := parser.src[lastField.Offset:lastEnd]
+		lastField.SetText(parser.lexer.client, text)
+		// Pass litRanges for the new text range.
+		if ranges := parser.lexer.litRangesFor(lastField.Offset, lastEnd); len(ranges) > 0 {
+			lastField.SetLitRanges(ranges)
+		}
 	}
 }
 
