@@ -58,6 +58,7 @@ func (n *node) OriginTextPosition() int {
 func (n *node) SetText(enc charset.Encoding, text string) {
 	n.enc = enc
 	n.text = text
+	n.litRanges = nil
 	n.once = &sync.Once{}
 }
 
