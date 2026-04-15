@@ -1005,15 +1005,15 @@ func (w *worker) doModifyColumnTypeWithData(
 		case model.AnalyzeStateNone:
 			switch job.ReorgMeta.Stage {
 			case model.ReorgStageModifyColumnUpdateColumn:
+				if job.MultiSchemaInfo != nil {
+					return skipReorgAndAnalyzeForSubJob(jobCtx, tbl.Meta(), job, model.ReorgStageModifyColumnUpdateColumn)
+				}
+
 				var done bool
 				reorgElements := BuildElements(changingCol, changingIdxs)
 				done, ver, err = doReorgWorkForModifyColumn(jobCtx, w, job, tbl, oldCol, reorgElements)
 				if !done {
 					return ver, err
-				}
-
-				if job.MultiSchemaInfo != nil {
-					return skipReorgAndAnalyzeForSubJob(jobCtx, tbl.Meta(), job)
 				}
 
 				if len(changingIdxs) > 0 {
@@ -1225,7 +1225,7 @@ func (w *worker) doModifyColumnIndexReorg(
 				job.ReorgMeta.Stage = model.ReorgStageModifyColumnRecreateIndex
 			case model.ReorgStageModifyColumnRecreateIndex:
 				if job.MultiSchemaInfo != nil {
-					return skipReorgAndAnalyzeForSubJob(jobCtx, tbl.Meta(), job)
+					return skipReorgAndAnalyzeForSubJob(jobCtx, tbl.Meta(), job, model.ReorgStageModifyColumnRecreateIndex)
 				}
 				var done bool
 				done, ver, err = doReorgWorkForCreateIndex(w, jobCtx, job, tbl, changingIdxInfos)

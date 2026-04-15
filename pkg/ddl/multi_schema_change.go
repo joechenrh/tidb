@@ -30,9 +30,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// For multi-schema change, analyze and index reorg is done by parent job.
+// For multi-schema change, analyze and reorg are done by parent job.
 // So we just skip them for sub-jobs.
-func skipReorgAndAnalyzeForSubJob(jobCtx *jobContext, tblInfo *model.TableInfo, job *model.Job) (int64, error) {
+func skipReorgAndAnalyzeForSubJob(jobCtx *jobContext, tblInfo *model.TableInfo, job *model.Job, reorgStage model.ReorgStage) (int64, error) {
 	v, err := getValidCurrentVersion(jobCtx.store)
 	if err != nil {
 		return 0, errors.Trace(err)
@@ -44,7 +44,7 @@ func skipReorgAndAnalyzeForSubJob(jobCtx *jobContext, tblInfo *model.TableInfo, 
 	if _, err := pickBackfillType(job); err != nil {
 		job.ReorgMeta.ReorgTp = model.ReorgTypeIngest
 	}
-	job.ReorgMeta.Stage = model.ReorgStageModifyColumnCompleted
+	job.ReorgMeta.Stage = reorgStage
 	job.ReorgMeta.AnalyzeState = model.AnalyzeStateSkipped
 	checkAndMarkNonRevertible(job)
 
@@ -60,7 +60,12 @@ func (w *worker) reorgAndAnalyzeForMultiSchemaChange(
 	case model.AnalyzeStateNone:
 		switch job.ReorgMeta.Stage {
 		case model.ReorgStageNone:
-			if checkNeedReorg(tblInfo) {
+			if checkNeedRowReorg(tblInfo) {
+				job.SnapshotVer = 0
+				job.ReorgMeta.Stage = model.ReorgStageModifyColumnUpdateColumn
+				logutil.DDLLogger().Info("multi-schema change ready to reorg rows",
+					zap.Int64("job", job.ID), zap.Int8("state", job.ReorgMeta.AnalyzeState))
+			} else if checkNeedReorg(tblInfo) {
 				job.SnapshotVer = 0
 				job.ReorgMeta.Stage = model.ReorgStageModifyColumnRecreateIndex
 				logutil.DDLLogger().Info("multi-schema change ready to reorg index",
@@ -71,6 +76,42 @@ func (w *worker) reorgAndAnalyzeForMultiSchemaChange(
 					zap.Int64("job", job.ID), zap.Int8("state", job.ReorgMeta.AnalyzeState))
 			}
 
+			return false, ver, err
+		case model.ReorgStageModifyColumnUpdateColumn:
+			dbInfo, err := checkSchemaExistAndCancelNotExistJob(jobCtx.metaMut, job)
+			if err != nil {
+				return false, ver, errors.Trace(err)
+			}
+
+			tbl, err := getTable(jobCtx.getAutoIDRequirement(), dbInfo.ID, tblInfo)
+			if err != nil {
+				return false, ver, errors.Trace(err)
+			}
+
+			oldCol, reorgElements := getReorgElementsForMultiSchemaUpdateColumn(tbl)
+			if len(reorgElements) == 0 || oldCol == nil {
+				intest.Assert(false, "multi-schema modify-column row reorg has no changing columns")
+				if checkNeedReorg(tblInfo) {
+					job.SnapshotVer = 0
+					job.ReorgMeta.Stage = model.ReorgStageModifyColumnRecreateIndex
+				} else {
+					checkAndUpdateNeedAnalyze(job, tblInfo)
+				}
+				return false, ver, err
+			}
+
+			var done bool
+			done, ver, err = doReorgWorkForModifyColumn(jobCtx, w, job, tbl, oldCol, reorgElements)
+			if !done {
+				return false, ver, err
+			}
+
+			if checkNeedReorg(tblInfo) {
+				job.SnapshotVer = 0
+				job.ReorgMeta.Stage = model.ReorgStageModifyColumnRecreateIndex
+			} else {
+				checkAndUpdateNeedAnalyze(job, tblInfo)
+			}
 			return false, ver, err
 		case model.ReorgStageModifyColumnRecreateIndex:
 			dbInfo, err := checkSchemaExistAndCancelNotExistJob(jobCtx.metaMut, job)
@@ -462,6 +503,30 @@ func mergeAddIndex(info *model.MultiSchemaInfo) {
 	mergedSubJob.JobArgs = newAddIndexesArgs
 	newSubJobs = append(newSubJobs, mergedSubJob)
 	info.SubJobs = newSubJobs
+}
+
+func getReorgElementsForMultiSchemaUpdateColumn(tbl table.Table) (*model.ColumnInfo, []*meta.Element) {
+	colPairs := getOldAndNewColumnsForUpdateColumns(tbl, 0, true)
+	if len(colPairs) == 0 {
+		return nil, nil
+	}
+	reorgElements := make([]*meta.Element, 0, len(colPairs))
+	for _, colPair := range colPairs {
+		reorgElements = append(reorgElements, &meta.Element{
+			ID:      colPair.newColInfo.ID,
+			TypeKey: meta.ColumnElementKey,
+		})
+	}
+	return colPairs[0].oldColInfo, reorgElements
+}
+
+func checkNeedRowReorg(tblInfo *model.TableInfo) bool {
+	for _, col := range tblInfo.Columns {
+		if col.State == model.StateWriteReorganization && col.ChangeStateInfo != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func checkNeedReorg(tblInfo *model.TableInfo) bool {

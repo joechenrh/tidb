@@ -1187,7 +1187,7 @@ SwitchIndexState:
 		switch job.ReorgMeta.AnalyzeState {
 		case model.AnalyzeStateNone:
 			if job.MultiSchemaInfo != nil {
-				return skipReorgAndAnalyzeForSubJob(jobCtx, tbl.Meta(), job)
+				return skipReorgAndAnalyzeForSubJob(jobCtx, tbl.Meta(), job, job.ReorgMeta.Stage)
 			}
 
 			// reorg the index data.
