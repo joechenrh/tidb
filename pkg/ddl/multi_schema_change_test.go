@@ -561,8 +561,8 @@ func TestMultiSchemaChangeModifyColumnsCancelled(t *testing.T) {
 		if job.Type != model.ActionMultiSchemaChange {
 			return false
 		}
-		assertMultiSchema(t, job, 3)
-		return job.MultiSchemaInfo.SubJobs[2].SchemaState == model.StateWriteReorganization
+		assertMultiSchema(t, job, 1)
+		return job.MultiSchemaInfo.SubJobs[0].SchemaState == model.StateWriteReorganization
 	})
 	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/ddl/afterWaitSchemaSynced", hook.OnJobUpdated)
 	sql := "alter table t modify column a tinyint, modify column b bigint, modify column c char(20);"
