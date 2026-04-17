@@ -58,6 +58,12 @@ type TableKVEncoder struct {
 	defaultColOffsets []int  // table-column offsets for columns that get defaults (not insert, not special)
 	specialColOffsets []int  // table-column offsets for auto-inc, auto-random, generated columns
 	notNullFlags      []bool // per-column NOT NULL flag cache (indexed by table-column offset)
+	// insertColNeedsPost indexes into insertColumns; true when a column needs
+	// post-cast handling that CastColumnValue does not perform:
+	// NOT-NULL enforcement (CheckNotNull/HandleBadNull), or allocator Rebase
+	// for auto-inc / auto-random / generated columns. Columns where this is
+	// false stay on the fast path (skip-cast or cast, then plain assign).
+	insertColNeedsPost []bool
 }
 
 type simpleColAssignExprCreator interface {
@@ -222,18 +228,33 @@ func (en *TableKVEncoder) buildRecord(vals []types.Datum, hasValue []bool, rowID
 	exprCtx := en.SessionCtx.GetExprCtx()
 	errCtx := exprCtx.GetEvalCtx().ErrCtx()
 
-	// Insert columns — apply skipCast or CastColumnValue.
+	// Insert columns — apply skipCast or CastColumnValue. Columns that need
+	// NOT-NULL enforcement or auto-inc / auto-random Rebase are handled via
+	// ProcessColDatum (slow path); plain nullable columns stay on the fast
+	// path. Precomputed in initBuildRecordMeta as insertColNeedsPost.
 	for i, col := range en.insertColumns {
 		offset := col.Offset
+		var value types.Datum
 		if en.canSkipCastColumnValue(i) {
-			record[offset] = vals[i]
+			value = vals[i]
 		} else {
 			casted, err := table.CastColumnValue(exprCtx, vals[i], col.ToInfo(), false, false)
 			if err != nil {
 				return nil, en.LogKVConvertFailed(vals, i, col.ToInfo(), err)
 			}
-			record[offset] = casted
+			value = casted
 		}
+		if en.insertColNeedsPost[i] {
+			// needCast=false: value is already cast-or-skip. ProcessColDatum
+			// runs CheckNotNull/HandleBadNull and rebases auto-inc / auto-random.
+			processed, err := en.ProcessColDatum(col, rowID, &value, false)
+			if err != nil {
+				return nil, en.LogKVConvertFailed(vals, i, col.ToInfo(), err)
+			}
+			record[offset] = processed
+			continue
+		}
+		record[offset] = value
 	}
 
 	// Default columns — not insert, not special.
@@ -332,6 +353,15 @@ func (en *TableKVEncoder) initBuildRecordMeta() {
 	en.notNullFlags = make([]bool, numCols)
 	for i, col := range en.Columns {
 		en.notNullFlags[i] = mysql.HasNotNullFlag(col.GetFlag())
+	}
+
+	en.insertColNeedsPost = make([]bool, len(en.insertColumns))
+	for i, col := range en.insertColumns {
+		info := col.ToInfo()
+		if mysql.HasNotNullFlag(col.GetFlag()) ||
+			kv.IsAutoIncCol(info) || en.IsAutoRandomCol(info) || col.IsGenerated() {
+			en.insertColNeedsPost[i] = true
+		}
 	}
 
 	en.defaultColOffsets = make([]int, 0)
