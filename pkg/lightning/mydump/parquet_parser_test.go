@@ -159,6 +159,19 @@ func TestParquetVectorList(t *testing.T) {
 			},
 		},
 		{
+			name: "3-level-required",
+			col: parquetListColumn{
+				Encoding: parquetList3LevelRequired,
+				// optional group <name> (LIST) { repeated group list { required float element } }
+				// Leaf maxDef=2 (required element adds 0). def 0=null, 1=empty, 2=present.
+				Gen: func() ([]float32, []int16, []int16) {
+					return []float32{1, 2, 3},
+						[]int16{0, 1, 2, 2, 2},
+						[]int16{0, 0, 0, 1, 0}
+				},
+			},
+		},
+		{
 			name: "2-level",
 			col: parquetListColumn{
 				Encoding: parquetList2Level,

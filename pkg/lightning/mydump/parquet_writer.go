@@ -44,19 +44,25 @@ type parquetListEncoding int
 const (
 	// parquetList3LevelOptional is the modern 3-level encoding with optional element:
 	//   optional group <name> (LIST) { repeated group list { optional float element } }
+	// Leaf maxDef = 3.
 	parquetList3LevelOptional parquetListEncoding = iota
+	// parquetList3LevelRequired is the 3-level encoding with required element:
+	//   optional group <name> (LIST) { repeated group list { required float element } }
+	// Leaf maxDef = 2 (same as 2-level, but a different schema shape).
+	parquetList3LevelRequired
 	// parquetList2Level is the legacy 2-level encoding:
 	//   optional group <name> (LIST) { repeated float element }
+	// Leaf maxDef = 2.
 	parquetList2Level
 )
 
 // maxDef returns the leaf max definition level implied by the encoding.
 func (e parquetListEncoding) maxDef() int16 {
 	switch e {
-	case parquetList2Level:
-		return 2
-	default:
+	case parquetList3LevelOptional:
 		return 3
+	default:
+		return 2
 	}
 }
 
@@ -194,8 +200,12 @@ func WriteParquetFile(path, fileName string, pcolumns []ParquetColumn, rows int,
 // using the requested on-wire encoding.
 func buildFloat32ListField(colName string, enc parquetListEncoding) (schema.Node, error) {
 	switch enc {
-	case parquetList3LevelOptional:
-		element, err := schema.NewPrimitiveNode("element", parquet.Repetitions.Optional, parquet.Types.Float, -1, -1)
+	case parquetList3LevelOptional, parquetList3LevelRequired:
+		elementRep := parquet.Repetitions.Optional
+		if enc == parquetList3LevelRequired {
+			elementRep = parquet.Repetitions.Required
+		}
+		element, err := schema.NewPrimitiveNode("element", elementRep, parquet.Types.Float, -1, -1)
 		if err != nil {
 			return nil, err
 		}

@@ -58,6 +58,10 @@ var (
 	errParquetListNullElement = errors.New("parquet list contains null element, which is not supported")
 )
 
+func errMalformedParquetListDefLevel(def, maxDef int16) error {
+	return errors.Errorf("malformed parquet definition level %d for list (maxDef=%d)", def, maxDef)
+}
+
 func estimateRowSize(row []types.Datum) int {
 	length := 0
 	for _, v := range row {
@@ -251,7 +255,11 @@ func (it *vectorFloat32Iterator) Next(d *types.Datum) error {
 		return nil
 	case def0 == elementPresent:
 		// fall through to element collection
+	case def0 < nullListDef || def0 > elementPresent:
+		return errMalformedParquetListDefLevel(def0, it.maxDef)
 	default:
+		// An intermediate def level only occurs in 3-level encoding with
+		// optional element, meaning the inner element is null.
 		return errParquetListNullElement
 	}
 
@@ -273,11 +281,15 @@ func (it *vectorFloat32Iterator) Next(d *types.Datum) error {
 		}
 		it.levelOffset++
 
-		if def != elementPresent {
+		switch {
+		case def == elementPresent:
+			it.vecBuf = append(it.vecBuf, it.values[it.valueOffset])
+			it.valueOffset++
+		case def < nullListDef || def > elementPresent:
+			return errMalformedParquetListDefLevel(def, it.maxDef)
+		default:
 			return errParquetListNullElement
 		}
-		it.vecBuf = append(it.vecBuf, it.values[it.valueOffset])
-		it.valueOffset++
 	}
 
 	vec, err := types.CreateVectorFloat32(it.vecBuf)
