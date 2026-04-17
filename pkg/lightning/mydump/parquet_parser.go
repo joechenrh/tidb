@@ -58,10 +58,6 @@ var (
 	errParquetListNullElement = errors.New("parquet list contains null element, which is not supported")
 )
 
-func errInvalidParquetListDefLevel(def, maxDef int16) error {
-	return errors.Errorf("invalid parquet definition level %d for list (maxDef=%d)", def, maxDef)
-}
-
 func estimateRowSize(row []types.Datum) int {
 	length := 0
 	for _, v := range row {
@@ -208,18 +204,26 @@ func newVectorFloat32Iterator(batchSize int) *vectorFloat32Iterator {
 	}
 }
 
+// Next reads the next LIST value and stores the resulting vector in d.
+//
+// It handles both Parquet LIST encodings accepted by validateFloat32ListRoot:
+//   - 3-level: optional LIST { repeated group list { optional|required float element } } (leaf maxDef = 3 or 2)
+//   - 2-level: optional LIST { repeated float element }                                  (leaf maxDef = 2)
+//
+// Leaf definition levels always mean:
+//   - def == 0            : null list
+//   - def == 1            : empty list (LIST is present, 0 elements)
+//   - def == maxDef       : element is present
+//   - 1 < def < maxDef    : null inner element (only reachable for 3-level with
+//                           optional element; rejected as unsupported)
+//
+// Repetition level 0 starts a new list; repetition level 1 continues the current one.
 func (it *vectorFloat32Iterator) Next(d *types.Datum) error {
-	// For a standard 3-level LIST, leaf maxDef must be 3:
-	// def=0 => null list
-	// def=1 => empty list
-	// def=2 => null element (not supported)
-	// def=3 => element present
 	const (
-		nullListDef    int16 = 0
-		emptyListDef   int16 = 1
-		nullElementDef int16 = 2
-		elementPresent int16 = 3
+		nullListDef  int16 = 0
+		emptyListDef int16 = 1
 	)
+	elementPresent := it.maxDef
 
 	if err := it.ensureBatch(); err != nil {
 		return err
@@ -234,22 +238,21 @@ func (it *vectorFloat32Iterator) Next(d *types.Datum) error {
 		return errors.Errorf("invalid repetition level %d at start of list", rep0)
 	}
 
-	switch def0 {
-	case nullListDef:
+	switch {
+	case def0 == nullListDef:
 		d.SetNull()
 		return nil
-	case emptyListDef:
+	case def0 == emptyListDef:
 		vec, err := types.CreateVectorFloat32(nil)
 		if err != nil {
 			return errors.Trace(err)
 		}
 		d.SetVectorFloat32(vec)
 		return nil
-	case nullElementDef:
-		return errParquetListNullElement
-	case elementPresent:
+	case def0 == elementPresent:
+		// fall through to element collection
 	default:
-		return errInvalidParquetListDefLevel(def0, it.maxDef)
+		return errParquetListNullElement
 	}
 
 	it.vecBuf = append(it.vecBuf, it.values[it.valueOffset])
@@ -270,15 +273,11 @@ func (it *vectorFloat32Iterator) Next(d *types.Datum) error {
 		}
 		it.levelOffset++
 
-		switch def {
-		case nullElementDef:
+		if def != elementPresent {
 			return errParquetListNullElement
-		case elementPresent:
-			it.vecBuf = append(it.vecBuf, it.values[it.valueOffset])
-			it.valueOffset++
-		default:
-			return errInvalidParquetListDefLevel(def, it.maxDef)
 		}
+		it.vecBuf = append(it.vecBuf, it.values[it.valueOffset])
+		it.valueOffset++
 	}
 
 	vec, err := types.CreateVectorFloat32(it.vecBuf)
@@ -399,15 +398,24 @@ func (pf *parquetFileWrapper) Open() (parquet.ReaderAtSeekerOpener, error) {
 	return newPf, nil
 }
 
-// validateOptionalFloat32ListRoot validates the LIST schema for float vector.
-// Currently only support the standard 3-level LIST encoding with optional element:
+// validateFloat32ListRoot validates that a LIST-annotated column can be read as
+// a VectorFloat32. Two common Parquet LIST encodings are accepted:
 //
-//	optional group <name> (LIST) {
-//	  repeated group <name> {
-//	    optional float element;
-//	  }
-//	}
-func validateOptionalFloat32ListRoot(root schema.Node, leaf *schema.Column) error {
+//   - 3-level (recommended since parquet-format 2.4):
+//     optional group <name> (LIST) {
+//       repeated group <name> {
+//         optional|required float element;
+//       }
+//     }
+//
+//   - 2-level (legacy, still emitted by Hive, Impala, and older writers):
+//     optional group <name> (LIST) {
+//       repeated float element;
+//     }
+//
+// See the Parquet LogicalType spec "Backward-compatibility rules" for details:
+// https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#lists
+func validateFloat32ListRoot(root schema.Node, leaf *schema.Column) error {
 	wrap := func(err error) error {
 		return errors.Annotate(err, "unsupported parquet list encoding")
 	}
@@ -423,36 +431,43 @@ func validateOptionalFloat32ListRoot(root schema.Node, leaf *schema.Column) erro
 		return wrap(errors.Errorf("expect 1 child, got %d", rootGroup.NumFields()))
 	}
 
-	repeatedGroup, ok := rootGroup.Field(0).(*schema.GroupNode)
-	if !ok {
-		return wrap(errors.New("list child is not group"))
-	}
-	if repeatedGroup.RepetitionType() != parquet.Repetitions.Repeated {
-		return wrap(errors.Errorf("list repetition=%s", repeatedGroup.RepetitionType().String()))
-	}
-	if repeatedGroup.NumFields() != 1 {
-		return wrap(errors.Errorf("repeated group expects 1 field, got %d", repeatedGroup.NumFields()))
+	child := rootGroup.Field(0)
+	if child.RepetitionType() != parquet.Repetitions.Repeated {
+		return wrap(errors.Errorf("list child repetition=%s", child.RepetitionType().String()))
 	}
 
-	elementNode, ok := repeatedGroup.Field(0).(*schema.PrimitiveNode)
-	if !ok {
-		return wrap(errors.New("element is not primitive"))
-	}
-	if elementNode.RepetitionType() != parquet.Repetitions.Optional {
-		return wrap(errors.Errorf("element repetition=%s", elementNode.RepetitionType().String()))
-	}
-	if elementNode.PhysicalType() != parquet.Types.Float {
-		return wrap(errors.Errorf("element physical type=%s", elementNode.PhysicalType().String()))
+	var element *schema.PrimitiveNode
+	switch node := child.(type) {
+	case *schema.PrimitiveNode:
+		// 2-level encoding: repeated primitive directly under the LIST group.
+		element = node
+	case *schema.GroupNode:
+		// 3-level encoding: repeated group wrapping a single primitive element.
+		if node.NumFields() != 1 {
+			return wrap(errors.Errorf("repeated group expects 1 field, got %d", node.NumFields()))
+		}
+		primitive, ok := node.Field(0).(*schema.PrimitiveNode)
+		if !ok {
+			return wrap(errors.New("element is not primitive"))
+		}
+		element = primitive
+	default:
+		return wrap(errors.Errorf("unsupported list child kind %T", child))
 	}
 
+	if element.PhysicalType() != parquet.Types.Float {
+		return wrap(errors.Errorf("element physical type=%s", element.PhysicalType().String()))
+	}
 	if leaf.PhysicalType() != parquet.Types.Float {
 		return wrap(errors.Errorf("leaf physical type=%s", leaf.PhysicalType().String()))
 	}
 	if leaf.MaxRepetitionLevel() != 1 {
 		return wrap(errors.Errorf("leaf maxRep=%d", leaf.MaxRepetitionLevel()))
 	}
-	if leaf.MaxDefinitionLevel() != 3 {
-		return wrap(errors.Errorf("leaf maxDef=%d", leaf.MaxDefinitionLevel()))
+	// maxDef = 2 for 2-level encoding and for 3-level with required element;
+	// maxDef = 3 for 3-level with optional element.
+	if d := leaf.MaxDefinitionLevel(); d != 2 && d != 3 {
+		return wrap(errors.Errorf("leaf maxDef=%d", d))
 	}
 	return nil
 }
@@ -741,7 +756,7 @@ func NewParquetParser(
 
 		root := reader.MetaData().Schema.ColumnRoot(i)
 		if root != nil && root.ConvertedType() == schema.ConvertedTypes.List {
-			if err := validateOptionalFloat32ListRoot(root, desc); err != nil {
+			if err := validateFloat32ListRoot(root, desc); err != nil {
 				return nil, errors.Trace(err)
 			}
 			colTypes[i].converted = schema.ConvertedTypes.List

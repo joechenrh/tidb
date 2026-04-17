@@ -37,7 +37,36 @@ type ParquetColumn struct {
 	Gen       func(numRows int) (any, []int16)
 }
 
+// parquetListEncoding selects which on-wire LIST encoding the test writer emits.
+// See validateFloat32ListRoot in parquet_parser.go for the reader-side spec.
+type parquetListEncoding int
+
+const (
+	// parquetList3LevelOptional is the modern 3-level encoding with optional element:
+	//   optional group <name> (LIST) { repeated group list { optional float element } }
+	parquetList3LevelOptional parquetListEncoding = iota
+	// parquetList2Level is the legacy 2-level encoding:
+	//   optional group <name> (LIST) { repeated float element }
+	parquetList2Level
+)
+
+// maxDef returns the leaf max definition level implied by the encoding.
+func (e parquetListEncoding) maxDef() int16 {
+	switch e {
+	case parquetList2Level:
+		return 2
+	default:
+		return 3
+	}
+}
+
 type parquetListGen func() (values []float32, defLevels, repLevels []int16)
+
+// parquetListColumn describes one LIST<FLOAT> column to emit in a test file.
+type parquetListColumn struct {
+	Encoding parquetListEncoding
+	Gen      parquetListGen
+}
 
 type writeWrapper struct {
 	Writer storage.ExternalFileWriter
@@ -161,7 +190,36 @@ func WriteParquetFile(path, fileName string, pcolumns []ParquetColumn, rows int,
 	return nil
 }
 
-func WriteParquetListFile(path, fileName string, generators []parquetListGen, addOpts ...parquet.WriterProperty) error {
+// buildFloat32ListField builds a schema node for a single LIST<float> column
+// using the requested on-wire encoding.
+func buildFloat32ListField(colName string, enc parquetListEncoding) (schema.Node, error) {
+	switch enc {
+	case parquetList3LevelOptional:
+		element, err := schema.NewPrimitiveNode("element", parquet.Repetitions.Optional, parquet.Types.Float, -1, -1)
+		if err != nil {
+			return nil, err
+		}
+		listGroup, err := schema.NewGroupNode("list", parquet.Repetitions.Repeated, []schema.Node{element}, -1)
+		if err != nil {
+			return nil, err
+		}
+		return schema.NewGroupNodeConverted(colName, parquet.Repetitions.Optional, []schema.Node{listGroup}, schema.ConvertedTypes.List, -1)
+	case parquetList2Level:
+		element, err := schema.NewPrimitiveNode("element", parquet.Repetitions.Repeated, parquet.Types.Float, -1, -1)
+		if err != nil {
+			return nil, err
+		}
+		return schema.NewGroupNodeConverted(colName, parquet.Repetitions.Optional, []schema.Node{element}, schema.ConvertedTypes.List, -1)
+	default:
+		return nil, fmt.Errorf("unknown parquet list encoding: %d", enc)
+	}
+}
+
+// WriteParquetListFile writes a Parquet file made of LIST<float> columns.
+// Each column chooses its own encoding (2-level or 3-level). The generator
+// must return leaf values together with matching definition and repetition
+// level sequences. It is intended for tests only.
+func WriteParquetListFile(path, fileName string, columns []parquetListColumn, addOpts ...parquet.WriterProperty) error {
 	s, err := getStore(path)
 	if err != nil {
 		return err
@@ -172,20 +230,12 @@ func WriteParquetListFile(path, fileName string, generators []parquetListGen, ad
 	}
 	wrapper := &writeWrapper{Writer: writer}
 
-	fields := make([]schema.Node, len(generators))
-	opts := make([]parquet.WriterProperty, 0, len(generators)*2)
-	for i := range generators {
+	fields := make([]schema.Node, len(columns))
+	opts := make([]parquet.WriterProperty, 0, len(columns))
+	for i, col := range columns {
 		// Column name doesn't matter for current tests.
 		colName := fmt.Sprintf("c%d", i)
-		element, err := schema.NewPrimitiveNode("element", parquet.Repetitions.Optional, parquet.Types.Float, -1, -1)
-		if err != nil {
-			return err
-		}
-		listGroup, err := schema.NewGroupNode("list", parquet.Repetitions.Repeated, []schema.Node{element}, -1)
-		if err != nil {
-			return err
-		}
-		fields[i], err = schema.NewGroupNodeConverted(colName, parquet.Repetitions.Optional, []schema.Node{listGroup}, schema.ConvertedTypes.List, -1)
+		fields[i], err = buildFloat32ListField(colName, col.Encoding)
 		if err != nil {
 			return err
 		}
@@ -203,28 +253,27 @@ func WriteParquetListFile(path, fileName string, generators []parquetListGen, ad
 	//nolint: errcheck
 	defer rgw.Close()
 
-	for i, gen := range generators {
+	for i, col := range columns {
 		cw, err := rgw.NextColumn()
 		if err != nil {
 			return err
 		}
-		vals, defLevels, repLevels := gen()
-		switch w := cw.(type) {
-		case *file.Float32ColumnChunkWriter:
-			expectedValues := 0
-			for _, d := range defLevels {
-				if d == 3 {
-					expectedValues++
-				}
-			}
-			if len(vals) != expectedValues {
-				return fmt.Errorf("parquet list column %d has %d values but expects %d (defLevels=%v)", i, len(vals), expectedValues, defLevels)
-			}
-			_, err = w.WriteBatch(vals, defLevels, repLevels)
-		default:
-			return fmt.Errorf("unsupported column type %T", cw)
+		w, ok := cw.(*file.Float32ColumnChunkWriter)
+		if !ok {
+			return fmt.Errorf("parquet list column %d: expected Float32ColumnChunkWriter, got %T", i, cw)
 		}
-		if err != nil {
+		vals, defLevels, repLevels := col.Gen()
+		presentDef := col.Encoding.maxDef()
+		expectedValues := 0
+		for _, d := range defLevels {
+			if d == presentDef {
+				expectedValues++
+			}
+		}
+		if len(vals) != expectedValues {
+			return fmt.Errorf("parquet list column %d has %d values but expects %d (defLevels=%v)", i, len(vals), expectedValues, defLevels)
+		}
+		if _, err := w.WriteBatch(vals, defLevels, repLevels); err != nil {
 			return err
 		}
 		if err := cw.Close(); err != nil {

@@ -106,85 +106,111 @@ func TestParquetParser(t *testing.T) {
 	require.ErrorIs(t, reader.ReadRow(), io.EOF)
 }
 
+// readVectorRows reads every row from pp into decoded form.
+//
+// isNull distinguishes a SQL NULL list (true) from an empty list (false)
+// because an empty float vector would otherwise be indistinguishable from NULL
+// at the []float32 level.
+func readVectorRows(t *testing.T, pp *ParquetParser) (rows [][]float32, isNull []bool) {
+	t.Helper()
+	for {
+		err := pp.ReadRow()
+		if err == io.EOF {
+			return rows, isNull
+		}
+		require.NoError(t, err)
+		row := pp.LastRow()
+		require.Len(t, row.Row, 1)
+		d := row.Row[0]
+		if d.IsNull() {
+			rows = append(rows, nil)
+			isNull = append(isNull, true)
+		} else {
+			require.Equal(t, types.KindVectorFloat32, d.Kind(),
+				"expected KindVectorFloat32 for non-null row")
+			// Clone: parser buffers are shallow copies of internal pages.
+			elems := append([]float32{}, d.GetVectorFloat32().Elements()...)
+			rows = append(rows, elems)
+			isNull = append(isNull, false)
+		}
+		pp.RecycleRow(row)
+	}
+}
+
 func TestParquetVectorList(t *testing.T) {
-	dir := t.TempDir()
-	name := "vector_list.parquet"
-	gens := []parquetListGen{
-		func() ([]float32, []int16, []int16) {
-			// 4 rows:
-			// 1) NULL
-			// 2) []
-			// 3) [1,2]
-			// 4) [3]
-			// Standard 3-level LIST encoding (maxDef=3, maxRep=1) for schema:
-			// optional group vec (LIST) { repeated group list { optional float element; } }
-			// null list => def=0, rep=0
-			// empty list => def=1, rep=0
-			// null element => def=2 (not supported)
-			// element present => def=3
-			values := []float32{1, 2, 3}
-			def := []int16{0, 1, 3, 3, 3}
-			rep := []int16{0, 0, 0, 1, 0}
-			return values, def, rep
+	// Rows [NULL, [], [1,2], [3]] encoded in both Parquet LIST encodings.
+	// The reader must decode identical logical values from either form.
+	cases := []struct {
+		name string
+		col  parquetListColumn
+	}{
+		{
+			name: "3-level-optional",
+			col: parquetListColumn{
+				Encoding: parquetList3LevelOptional,
+				// optional group <name> (LIST) { repeated group list { optional float element } }
+				// null list=>def 0 rep 0; empty=>def 1 rep 0; null elem=>def 2 (absent here);
+				// present elem=>def 3 with rep 0 starting a list and rep 1 continuing it.
+				Gen: func() ([]float32, []int16, []int16) {
+					return []float32{1, 2, 3},
+						[]int16{0, 1, 3, 3, 3},
+						[]int16{0, 0, 0, 1, 0}
+				},
+			},
+		},
+		{
+			name: "2-level",
+			col: parquetListColumn{
+				Encoding: parquetList2Level,
+				// optional group <name> (LIST) { repeated float element }
+				// null list=>def 0 rep 0; empty=>def 1 rep 0;
+				// present elem=>def 2 with rep 0 starting a list and rep 1 continuing it.
+				Gen: func() ([]float32, []int16, []int16) {
+					return []float32{1, 2, 3},
+						[]int16{0, 1, 2, 2, 2},
+						[]int16{0, 0, 0, 1, 0}
+				},
+			},
 		},
 	}
-	require.NoError(t, WriteParquetListFile(dir, name, gens))
 
-	store, err := storage.NewLocalStorage(dir)
-	require.NoError(t, err)
-	ctx := context.Background()
-	r, err := store.Open(ctx, name, nil)
-	require.NoError(t, err)
-	pp, err := NewParquetParser(ctx, store, r, name, ParquetFileMeta{})
-	require.NoError(t, err)
-	defer pp.Close()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			name := "vector_list.parquet"
+			require.NoError(t, WriteParquetListFile(dir, name, []parquetListColumn{tc.col}))
 
-	// row1: NULL
-	require.NoError(t, pp.ReadRow())
-	row := pp.LastRow()
-	require.Len(t, row.Row, 1)
-	require.True(t, row.Row[0].IsNull())
-	pp.RecycleRow(row)
+			store, err := storage.NewLocalStorage(dir)
+			require.NoError(t, err)
+			ctx := context.Background()
+			r, err := store.Open(ctx, name, nil)
+			require.NoError(t, err)
+			pp, err := NewParquetParser(ctx, store, r, name, ParquetFileMeta{})
+			require.NoError(t, err)
+			defer pp.Close()
 
-	// row2: empty list => zero-length vector
-	require.NoError(t, pp.ReadRow())
-	row = pp.LastRow()
-	require.Len(t, row.Row, 1)
-	if row.Row[0].Kind() != types.KindVectorFloat32 {
-		t.Fatalf("expected KindVectorFloat32, got kind=%v isNull=%v", row.Row[0].Kind(), row.Row[0].IsNull())
+			rows, isNull := readVectorRows(t, pp)
+			require.Equal(t, []bool{true, false, false, false}, isNull)
+			require.Equal(t, [][]float32{nil, {}, {1, 2}, {3}}, rows)
+		})
 	}
-	require.Len(t, row.Row[0].GetVectorFloat32().Elements(), 0)
-	pp.RecycleRow(row)
-
-	// row3: [1,2]
-	require.NoError(t, pp.ReadRow())
-	row = pp.LastRow()
-	require.Equal(t, []float32{1, 2}, row.Row[0].GetVectorFloat32().Elements())
-	pp.RecycleRow(row)
-
-	// row4: [3]
-	require.NoError(t, pp.ReadRow())
-	row = pp.LastRow()
-	require.Equal(t, []float32{3}, row.Row[0].GetVectorFloat32().Elements())
-	pp.RecycleRow(row)
-
-	require.ErrorIs(t, pp.ReadRow(), io.EOF)
 }
 
 func TestParquetNullElementInList(t *testing.T) {
+	// Only the 3-level encoding with optional element can represent a null
+	// element in-band; the 2-level form lacks that intermediate def level.
 	dir := t.TempDir()
 	name := "vector_null_elem.parquet"
-	gens := []parquetListGen{
-		func() ([]float32, []int16, []int16) {
-			// 4 rows encoded in leaf levels:
-			// null, [], [1,2], [3, null]
-			values := []float32{1, 2, 3}
-			def := []int16{0, 1, 3, 3, 3, 2}
-			rep := []int16{0, 0, 0, 1, 0, 1}
-			return values, def, rep
+	columns := []parquetListColumn{{
+		Encoding: parquetList3LevelOptional,
+		Gen: func() ([]float32, []int16, []int16) {
+			// Rows: null, [], [1,2], [3, null]. Leaf maxDef=3.
+			return []float32{1, 2, 3},
+				[]int16{0, 1, 3, 3, 3, 2},
+				[]int16{0, 0, 0, 1, 0, 1}
 		},
-	}
-	require.NoError(t, WriteParquetListFile(dir, name, gens))
+	}}
+	require.NoError(t, WriteParquetListFile(dir, name, columns))
 
 	store, err := storage.NewLocalStorage(dir)
 	require.NoError(t, err)
@@ -195,28 +221,20 @@ func TestParquetNullElementInList(t *testing.T) {
 	require.NoError(t, err)
 	defer pp.Close()
 
-	// row1: NULL
+	// First three rows decode normally; the last one contains a null element
+	// and must surface an error instead of a silently truncated vector.
 	require.NoError(t, pp.ReadRow())
-	row := pp.LastRow()
-	require.True(t, row.Row[0].IsNull())
-	pp.RecycleRow(row)
+	require.True(t, pp.LastRow().Row[0].IsNull())
+	pp.RecycleRow(pp.LastRow())
 
-	// row2: []
 	require.NoError(t, pp.ReadRow())
-	row = pp.LastRow()
-	if row.Row[0].Kind() != types.KindVectorFloat32 {
-		t.Fatalf("expected KindVectorFloat32, got kind=%v isNull=%v", row.Row[0].Kind(), row.Row[0].IsNull())
-	}
-	require.Len(t, row.Row[0].GetVectorFloat32().Elements(), 0)
-	pp.RecycleRow(row)
+	require.Len(t, pp.LastRow().Row[0].GetVectorFloat32().Elements(), 0)
+	pp.RecycleRow(pp.LastRow())
 
-	// row3: [1,2]
 	require.NoError(t, pp.ReadRow())
-	row = pp.LastRow()
-	require.Equal(t, []float32{1, 2}, row.Row[0].GetVectorFloat32().Elements())
-	pp.RecycleRow(row)
+	require.Equal(t, []float32{1, 2}, pp.LastRow().Row[0].GetVectorFloat32().Elements())
+	pp.RecycleRow(pp.LastRow())
 
-	// row4: [3,null] => error
 	err = pp.ReadRow()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "null element")
