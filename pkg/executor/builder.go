@@ -2729,6 +2729,14 @@ func (b *executorBuilder) buildTopN(v *physicalop.PhysicalTopN) exec.Executor {
 		// return nil
 	}
 	t.ColumnIdxsUsedByChild = columnIdxsUsedByChild
+
+	// init partial order params
+	if v.PrefixCol != nil {
+		t.RankInfo.TruncateKeyExprs = make([]expression.Expression, 0, 1)
+		t.RankInfo.TruncateKeyExprs = append(t.RankInfo.TruncateKeyExprs, v.PrefixCol)
+		t.RankInfo.TruncateKeyPrefixCharCounts = make([]int, 0, 1)
+		t.RankInfo.TruncateKeyPrefixCharCounts = append(t.RankInfo.TruncateKeyPrefixCharCounts, v.PrefixLen)
+	}
 	return t
 }
 
@@ -4565,6 +4573,7 @@ func buildNoRangeIndexLookUpReader(b *executorBuilder, v *physicalop.PhysicalInd
 		idxCols:                    is.IdxCols,
 		colLens:                    is.IdxColLens,
 		idxPlans:                   v.IndexPlans,
+		idxPlanUnNatureOrders:      v.IndexPlansUnNatureOrders,
 		tblPlans:                   v.TablePlans,
 		PushedLimit:                v.PushedLimit,
 		idxNetDataSize:             v.GetAvgTableRowSize(),
@@ -4768,6 +4777,14 @@ func (b *executorBuilder) buildIndexMergeReader(v *physicalop.PhysicalIndexMerge
 			b.Ti.UseIndexMerge = true
 			b.Ti.UseTableLookUp.Store(true)
 		})
+	}
+	if len(v.TablePlans) == 0 {
+		if b.ctx.GetSessionVars().StmtCtx.InExplainStmt && !b.ctx.GetSessionVars().StmtCtx.InExplainAnalyzeStmt {
+			// Plain EXPLAIN doesn't execute the target plan, allow displaying planner output here.
+			return nil
+		}
+		b.err = errors.New("IndexMerge executor requires a table scan under IndexMerge")
+		return nil
 	}
 	ts := v.TablePlans[0].(*physicalop.PhysicalTableScan)
 	assertByItemsAreColumns(ts.ByItems)
