@@ -87,7 +87,7 @@ func openParser(
 	blockBufSize := int64(cfg.Mydumper.ReadBlockSize)
 	reader, err := mydump.OpenReader(ctx, &chunk.FileMeta, store, compressedio.DecompressConfig{
 		ZStdDecodeConcurrency: 1,
-	})
+	}, 0)
 	if err != nil {
 		return nil, err
 	}

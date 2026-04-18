@@ -470,7 +470,12 @@ func (rs *KS3Storage) Open(ctx context.Context, path string, o *storeapi.ReaderO
 		return nil, errors.Trace(err)
 	}
 	if prefetchSize > 0 {
-		reader = prefetch.NewReader(reader, r.RangeSize(), prefetchSize)
+		if prefetchSize > ks3ParallelPrefetchThreshold && r.RangeSize() > int64(ks3ParallelPrefetchBlockSize) {
+			_ = reader.Close()
+			reader = rs.newParallelRangeReader(ctx, path, r, prefetchSize)
+		} else {
+			reader = prefetch.NewReader(reader, r.RangeSize(), prefetchSize)
+		}
 	}
 	return &ks3ObjectReader{
 		ctx:          ctx,
@@ -673,7 +678,12 @@ func (r *ks3ObjectReader) Seek(offset int64, whence int) (int64, error) {
 	}
 	r.reader = newReader
 	if r.prefetchSize > 0 {
-		r.reader = prefetch.NewReader(r.reader, info.RangeSize(), r.prefetchSize)
+		if r.prefetchSize > ks3ParallelPrefetchThreshold && info.RangeSize() > int64(ks3ParallelPrefetchBlockSize) {
+			_ = r.reader.Close()
+			r.reader = r.storage.newParallelRangeReader(r.ctx, r.name, info, r.prefetchSize)
+		} else {
+			r.reader = prefetch.NewReader(r.reader, info.RangeSize(), r.prefetchSize)
+		}
 	}
 	r.rangeInfo = info
 	r.pos = realOffset
@@ -682,6 +692,32 @@ func (r *ks3ObjectReader) Seek(offset int64, whence int) (int64, error) {
 
 func (r *ks3ObjectReader) GetFileSize() (int64, error) {
 	return r.rangeInfo.Size, nil
+}
+
+// Range-parallel prefetch tuning — mirrors the s3like parameters.
+const (
+	ks3ParallelPrefetchThreshold      = 16 * 1024 * 1024 // 16 MiB
+	ks3ParallelPrefetchBlockSize      = 8 * 1024 * 1024  // 8 MiB
+	ks3ParallelPrefetchMaxConcurrency = 8
+)
+
+// newParallelRangeReader builds an io.ReadCloser that reads the byte range
+// described by r using N parallel range GETs. Offsets within the caller's
+// range map back to absolute object offsets via r.Start.
+func (rs *KS3Storage) newParallelRangeReader(ctx context.Context, path string, r s3like.RangeInfo, prefetchSize int) io.ReadCloser {
+	concurrency := prefetchSize / ks3ParallelPrefetchBlockSize
+	if concurrency > ks3ParallelPrefetchMaxConcurrency {
+		concurrency = ks3ParallelPrefetchMaxConcurrency
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	absStart := r.Start
+	opener := func(ctx context.Context, relStart, relEnd int64) (io.ReadCloser, error) {
+		rd, _, err := rs.open(ctx, path, absStart+relStart, absStart+relEnd)
+		return rd, err
+	}
+	return prefetch.NewParallelReader(ctx, opener, r.RangeSize(), concurrency, ks3ParallelPrefetchBlockSize)
 }
 
 // createUploader create multi upload request.

@@ -670,15 +670,19 @@ func (r *gcsObjectReader) Read(p []byte) (n int, err error) {
 	})
 	if r.reader == nil {
 		length := r.endPos - r.pos
-		rc, err := r.objHandle.NewRangeReader(r.ctx, r.pos, length)
-		if err != nil {
-			return 0, errors.Annotatef(err,
-				"failed to read gcs file, file info: input.bucket='%s', input.key='%s'",
-				r.storage.gcs.Bucket, r.name)
-		}
-		r.reader = rc
-		if r.prefetchSize > 0 {
-			r.reader = prefetch.NewReader(r.reader, length, r.prefetchSize)
+		if r.prefetchSize > gcsParallelPrefetchThreshold && length > int64(gcsParallelPrefetchBlockSize) {
+			r.reader = r.newParallelRangeReader(length)
+		} else {
+			rc, err := r.objHandle.NewRangeReader(r.ctx, r.pos, length)
+			if err != nil {
+				return 0, errors.Annotatef(err,
+					"failed to read gcs file, file info: input.bucket='%s', input.key='%s'",
+					r.storage.gcs.Bucket, r.name)
+			}
+			r.reader = rc
+			if r.prefetchSize > 0 {
+				r.reader = prefetch.NewReader(r.reader, length, r.prefetchSize)
+			}
 		}
 	}
 	n, err = r.reader.Read(p)
@@ -731,18 +735,47 @@ func (r *gcsObjectReader) Seek(offset int64, whence int) (int64, error) {
 		r.reader = io.NopCloser(bytes.NewReader(nil))
 		return realOffset, nil
 	}
-	rc, err := r.objHandle.NewRangeReader(r.ctx, r.pos, -1)
-	if err != nil {
-		return 0, errors.Annotatef(err,
-			"failed to read gcs file, file info: input.bucket='%s', input.key='%s'",
-			r.storage.gcs.Bucket, r.name)
-	}
-	r.reader = rc
-	if r.prefetchSize > 0 {
-		r.reader = prefetch.NewReader(r.reader, r.endPos-r.pos, r.prefetchSize)
+	length := r.endPos - r.pos
+	if r.prefetchSize > gcsParallelPrefetchThreshold && length > int64(gcsParallelPrefetchBlockSize) {
+		r.reader = r.newParallelRangeReader(length)
+	} else {
+		rc, err := r.objHandle.NewRangeReader(r.ctx, r.pos, -1)
+		if err != nil {
+			return 0, errors.Annotatef(err,
+				"failed to read gcs file, file info: input.bucket='%s', input.key='%s'",
+				r.storage.gcs.Bucket, r.name)
+		}
+		r.reader = rc
+		if r.prefetchSize > 0 {
+			r.reader = prefetch.NewReader(r.reader, length, r.prefetchSize)
+		}
 	}
 
 	return realOffset, nil
+}
+
+// Range-parallel prefetch tuning — mirrors the s3like parameters.
+const (
+	gcsParallelPrefetchThreshold      = 16 * 1024 * 1024 // 16 MiB
+	gcsParallelPrefetchBlockSize      = 8 * 1024 * 1024  // 8 MiB
+	gcsParallelPrefetchMaxConcurrency = 8
+)
+
+// newParallelRangeReader builds an io.ReadCloser that reads `length` bytes
+// starting at the reader's current r.pos using N concurrent GCS range GETs.
+func (r *gcsObjectReader) newParallelRangeReader(length int64) io.ReadCloser {
+	concurrency := r.prefetchSize / gcsParallelPrefetchBlockSize
+	if concurrency > gcsParallelPrefetchMaxConcurrency {
+		concurrency = gcsParallelPrefetchMaxConcurrency
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	absStart := r.pos
+	opener := func(ctx context.Context, relStart, relEnd int64) (io.ReadCloser, error) {
+		return r.objHandle.NewRangeReader(ctx, absStart+relStart, relEnd-relStart)
+	}
+	return prefetch.NewParallelReader(r.ctx, opener, length, concurrency, gcsParallelPrefetchBlockSize)
 }
 
 func (r *gcsObjectReader) GetFileSize() (int64, error) {

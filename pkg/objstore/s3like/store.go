@@ -44,6 +44,21 @@ import (
 // HardcodedChunkSize is the hardcoded chunk size.
 var HardcodedChunkSize = 5 * 1024 * 1024
 
+// Range-parallel prefetch tuning. When the caller requests a PrefetchSize
+// larger than parallelPrefetchThreshold, the reader issues multiple concurrent
+// range GETs per file to exceed single-connection S3 throughput.
+const (
+	// parallelPrefetchThreshold activates parallel-range mode. Below this the
+	// sequential double-buffered prefetch.Reader is used (same as today).
+	parallelPrefetchThreshold = 16 * 1024 * 1024 // 16 MiB
+	// parallelPrefetchBlockSize is the per-range read size. Matches the pattern
+	// used by pkg/lightning/backend/external.concurrentFileReader.
+	parallelPrefetchBlockSize = 8 * 1024 * 1024 // 8 MiB
+	// parallelPrefetchMaxConcurrency caps the number of concurrent S3 GETs per
+	// reader, to bound memory and connection-pool usage.
+	parallelPrefetchMaxConcurrency = 8
+)
+
 const (
 	// S3ExternalID is the key for the external ID used in S3 operations.
 	S3ExternalID = "external-id"
@@ -488,7 +503,15 @@ func (rs *Storage) Open(ctx context.Context, path string, o *storeapi.ReaderOpti
 		return nil, errors.Trace(err)
 	}
 	if prefetchSize > 0 {
-		reader = prefetch.NewReader(reader, r.RangeSize(), o.PrefetchSize)
+		if prefetchSize > parallelPrefetchThreshold && r.RangeSize() > int64(parallelPrefetchBlockSize) {
+			// Switch to parallel-range mode: close the sequential reader we
+			// just opened (cheap; we've read nothing) and hand out reader that
+			// issues N concurrent range GETs for the same byte range.
+			_ = reader.Close()
+			reader = rs.newParallelRangeReader(ctx, path, r, prefetchSize)
+		} else {
+			reader = prefetch.NewReader(reader, r.RangeSize(), prefetchSize)
+		}
 	}
 	return &s3ObjectReader{
 		storage:      rs,
@@ -499,6 +522,25 @@ func (rs *Storage) Open(ctx context.Context, path string, o *storeapi.ReaderOpti
 		rangeInfo:    r,
 		prefetchSize: prefetchSize,
 	}, nil
+}
+
+// newParallelRangeReader builds an io.ReadCloser that reads the byte range
+// described by r using N parallel range GETs. Offsets within the caller's
+// range map back to absolute object offsets via r.Start.
+func (rs *Storage) newParallelRangeReader(ctx context.Context, path string, r RangeInfo, prefetchSize int) io.ReadCloser {
+	concurrency := prefetchSize / parallelPrefetchBlockSize
+	if concurrency > parallelPrefetchMaxConcurrency {
+		concurrency = parallelPrefetchMaxConcurrency
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	absStart := r.Start
+	opener := func(ctx context.Context, relStart, relEnd int64) (io.ReadCloser, error) {
+		rd, _, err := rs.open(ctx, path, absStart+relStart, absStart+relEnd)
+		return rd, err
+	}
+	return prefetch.NewParallelReader(ctx, opener, r.RangeSize(), concurrency, parallelPrefetchBlockSize)
 }
 
 // RangeInfo represents the HTTP Content-Range header value

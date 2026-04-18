@@ -196,6 +196,14 @@ var (
 	// LoadDataReadBlockSize is exposed for test.
 	LoadDataReadBlockSize = int64(config.ReadBlockSize)
 
+	// DefaultEncodeReadPrefetchSize is the prefetch buffer size used for source
+	// files read by the IMPORT INTO encode step. When positive it enables async
+	// double-buffered prefetch (see pkg/util/prefetch); when >8 MiB and the
+	// underlying reader is offset-aware, the prefetch reader may additionally
+	// issue parallel range GETs. 32 MiB was chosen to be large enough to hide
+	// encode CPU behind S3 read latency and to enable 4-way range parallelism.
+	DefaultEncodeReadPrefetchSize = 32 * int(units.MiB)
+
 	supportedSuffixForServerDisk = []string{
 		".csv", ".sql", ".parquet",
 		".gz", ".gzip",
@@ -1657,7 +1665,7 @@ func (e *LoadDataController) GetLoadDataReaderInfos() []LoadDataReaderInfo {
 		f := e.dataFiles[i]
 		result = append(result, LoadDataReaderInfo{
 			Opener: func(ctx context.Context) (io.ReadSeekCloser, error) {
-				fileReader, err2 := mydump.OpenReader(ctx, f, e.dataStore, compressedio.DecompressConfig{})
+				fileReader, err2 := mydump.OpenReader(ctx, f, e.dataStore, compressedio.DecompressConfig{}, DefaultEncodeReadPrefetchSize)
 				if err2 != nil {
 					return nil, exeerrors.ErrLoadDataCantRead.GenWithStackByArgs(errors.GetErrStackMsg(err2), "Please check the INFILE path is correct")
 				}

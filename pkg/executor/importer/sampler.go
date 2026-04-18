@@ -224,7 +224,7 @@ func (s *kvSizeSampler) getParser(
 		Opener: func(ctx context.Context) (io.ReadSeekCloser, error) {
 			reader, err := mydump.OpenReader(ctx, &chunk.FileMeta, s.dataStore, compressedio.DecompressConfig{
 				ZStdDecodeConcurrency: 1,
-			})
+			}, 0)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}

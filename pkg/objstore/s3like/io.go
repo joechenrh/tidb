@@ -151,7 +151,12 @@ func (r *s3ObjectReader) Seek(offset int64, whence int) (int64, error) {
 	}
 	r.reader = newReader
 	if r.prefetchSize > 0 {
-		r.reader = prefetch.NewReader(r.reader, info.RangeSize(), r.prefetchSize)
+		if r.prefetchSize > parallelPrefetchThreshold && info.RangeSize() > int64(parallelPrefetchBlockSize) {
+			_ = r.reader.Close()
+			r.reader = r.storage.newParallelRangeReader(r.ctx, r.name, info, r.prefetchSize)
+		} else {
+			r.reader = prefetch.NewReader(r.reader, info.RangeSize(), r.prefetchSize)
+		}
 	}
 	r.rangeInfo = info
 	r.pos = realOffset

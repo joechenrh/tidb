@@ -469,7 +469,7 @@ func (p *PreImportInfoGetterImpl) ReadFirstNRowsByTableName(ctx context.Context,
 func (p *PreImportInfoGetterImpl) ReadFirstNRowsByFileMeta(ctx context.Context, dataFileMeta mydump.SourceFileMeta, n int) ([]string, [][]types.Datum, error) {
 	reader, err := mydump.OpenReader(ctx, &dataFileMeta, p.srcStorage, compressedio.DecompressConfig{
 		ZStdDecodeConcurrency: 1,
-	})
+	}, 0)
 	if err != nil {
 		return nil, nil, errors.Trace(err)
 	}
@@ -626,7 +626,7 @@ func (p *PreImportInfoGetterImpl) sampleDataFromTable(
 	sampleFile := tableMeta.DataFiles[0].FileMeta
 	reader, err := mydump.OpenReader(ctx, &sampleFile, p.srcStorage, compressedio.DecompressConfig{
 		ZStdDecodeConcurrency: 1,
-	})
+	}, 0)
 	if err != nil {
 		return 0.0, false, errors.Trace(err)
 	}

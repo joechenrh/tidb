@@ -326,7 +326,7 @@ func (e *LoadDataController) getParser(ctx context.Context, chunk *checkpoints.C
 		Opener: func(ctx context.Context) (io.ReadSeekCloser, error) {
 			reader, err := mydump.OpenReader(ctx, &chunk.FileMeta, e.dataStore, compressedio.DecompressConfig{
 				ZStdDecodeConcurrency: 1,
-			})
+			}, DefaultEncodeReadPrefetchSize)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}

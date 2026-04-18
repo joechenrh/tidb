@@ -674,21 +674,26 @@ func ReadUntil(parser Parser, pos int64) error {
 }
 
 // OpenReader opens a reader for the given file and storage.
+// prefetchSize, when positive, enables async double-buffered prefetch on the
+// returned reader (see pkg/util/prefetch). Pass 0 to disable (current default
+// for callers that don't need it).
 func OpenReader(
 	ctx context.Context,
 	fileMeta *SourceFileMeta,
 	store storeapi.Storage,
 	decompressCfg compressedio.DecompressConfig,
+	prefetchSize int,
 ) (reader storeapi.ReadSeekCloser, err error) {
+	opt := &storeapi.ReaderOption{PrefetchSize: prefetchSize}
 	switch {
 	case fileMeta.Compression != CompressionNone:
 		compressType, err2 := ToStorageCompressType(fileMeta.Compression)
 		if err2 != nil {
 			return nil, err2
 		}
-		reader, err = objstore.WithCompression(store, compressType, decompressCfg).Open(ctx, fileMeta.Path, nil)
+		reader, err = objstore.WithCompression(store, compressType, decompressCfg).Open(ctx, fileMeta.Path, opt)
 	default:
-		reader, err = store.Open(ctx, fileMeta.Path, nil)
+		reader, err = store.Open(ctx, fileMeta.Path, opt)
 	}
 	return
 }
