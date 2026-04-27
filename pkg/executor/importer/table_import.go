@@ -320,7 +320,8 @@ func (ti *TableImporter) EstimateParquetReaderMemory(ctx context.Context, path s
 	return mydump.EstimateParquetReaderMemory(ctx, ti.LoadDataController.dataStore, path)
 }
 
-func (e *LoadDataController) getParser(ctx context.Context, chunk *checkpoints.ChunkCheckpoint) (mydump.Parser, error) {
+func (e *LoadDataController) getParser(ctx context.Context, chunk *checkpoints.ChunkCheckpoint) (mydump.Parser, *ReaderTimings, error) {
+	rt := &ReaderTimings{}
 	info := LoadDataReaderInfo{
 		Opener: func(ctx context.Context) (io.ReadSeekCloser, error) {
 			reader, err := mydump.OpenReader(ctx, &chunk.FileMeta, e.dataStore, compressedio.DecompressConfig{
@@ -333,9 +334,9 @@ func (e *LoadDataController) getParser(ctx context.Context, chunk *checkpoints.C
 		},
 		Remote: &chunk.FileMeta,
 	}
-	parser, err := e.GetParser(ctx, info)
+	parser, err := e.GetParser(ctx, info, rt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	parserReady := false
 	defer func() {
@@ -350,17 +351,17 @@ func (e *LoadDataController) getParser(ctx context.Context, chunk *checkpoints.C
 		// if data file is split, only the first chunk need to do skip.
 		// see check in initOptions.
 		if err = HandleSkipNRows(parser, e.IgnoreLines); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		parser.SetRowID(chunk.Chunk.PrevRowIDMax)
 	} else {
 		// if we reached here, the file must be an uncompressed CSV file.
 		if err = parser.SetPos(chunk.Chunk.Offset, chunk.Chunk.PrevRowIDMax); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	parserReady = true
-	return parser, nil
+	return parser, rt, nil
 }
 
 func (ti *TableImporter) getKVEncoder(chunk *checkpoints.ChunkCheckpoint) (*TableKVEncoder, error) {

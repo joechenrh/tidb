@@ -241,6 +241,7 @@ func (s *kvSizeSampler) getParser(
 		s.generateCSVConfig(),
 		s.dataStore,
 		info,
+		nil,
 	)
 	if err != nil {
 		return nil, err

@@ -600,6 +600,7 @@ func TestParseFileType(t *testing.T) {
 					return os.Open(filePath)
 				},
 			},
+			nil,
 		)
 		require.True(t, exeerrors.ErrLoadDataUnsupportedFormat.Equal(err))
 		require.False(t, exeerrors.ErrLoadDataWrongFormatConfig.Equal(err))

@@ -397,7 +397,7 @@ func (w *encodeWorker) processStream(
 			if !ok {
 				return nil
 			}
-			dataParser, err := w.controller.GetParser(ctx, readerInfo)
+			dataParser, err := w.controller.GetParser(ctx, readerInfo, nil)
 			if err != nil {
 				return err
 			}

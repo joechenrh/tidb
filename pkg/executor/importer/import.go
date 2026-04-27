@@ -1678,10 +1678,29 @@ func newLoadDataParser(
 	csvConfig *config.CSVConfig,
 	dataStore storeapi.Storage,
 	dataFileInfo LoadDataReaderInfo,
+	rt *ReaderTimings,
 ) (parser mydump.Parser, err error) {
+	// Reader-chain layering for finer-grained timing (see ReaderTimings):
+	//   Opener(ctx) -> raw S3 reader   (when uncompressed)
+	//                -> decompressed reader  (when compressed; decompress is
+	//                   applied inside objstore.WithCompression.Open and is
+	//                   NOT currently split out)
+	//   -> timedReadSeekCloser{addS3Read}  (wraps the above; s3_read captures
+	//       S3 wait; for compressed files, also captures decompress CPU)
+	//   -> mydump.Parser
+	//
+	// parse time is derived as readDur - s3_read in the encode loop.
+	// Splitting decompress into its own label is deferred to a follow-up that
+	// instruments inside objstore.WithCompression.Open (risk #1 in the plan).
 	reader, err2 := dataFileInfo.Opener(ctx)
 	if err2 != nil {
 		return nil, err2
+	}
+	if rt != nil {
+		reader = &timedReadSeekCloser{
+			ReadSeekCloser: reader,
+			add:            rt.addS3Read,
+		}
 	}
 	defer func() {
 		if err != nil {
@@ -1737,6 +1756,7 @@ func newLoadDataParser(
 func (e *LoadDataController) GetParser(
 	ctx context.Context,
 	dataFileInfo LoadDataReaderInfo,
+	rt *ReaderTimings,
 ) (parser mydump.Parser, err error) {
 	return newLoadDataParser(
 		ctx,
@@ -1747,6 +1767,7 @@ func (e *LoadDataController) GetParser(
 		e.GenerateCSVConfig(),
 		e.dataStore,
 		dataFileInfo,
+		rt,
 	)
 }
 

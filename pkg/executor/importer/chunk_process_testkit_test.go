@@ -147,7 +147,7 @@ func TestFileChunkProcess(t *testing.T) {
 		checksum := verify.NewKVGroupChecksumWithKeyspace(nil)
 		processor := importer.NewFileChunkProcessor(
 			csvParser, encoder, nil,
-			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, checksum, collector,
+			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, checksum, collector, nil,
 		)
 		require.NoError(t, processor.Process(ctx))
 		require.True(t, ctrl.Satisfied())
@@ -165,6 +165,72 @@ func TestFileChunkProcess(t *testing.T) {
 		require.Equal(t, float64(3), metric.ReadCounter(metrics.RowsCounter.WithLabelValues(metric.StateRestored, "")))
 		require.Equal(t, uint64(2), *metric.ReadHistogram(metrics.RowEncodeSecondsHistogram).Histogram.SampleCount)
 		require.Equal(t, uint64(2), *metric.ReadHistogram(metrics.RowReadSecondsHistogram).Histogram.SampleCount)
+	})
+
+	t.Run("emits split read labels", func(t *testing.T) {
+		collector := &execute.TestCollector{}
+
+		fileName := path.Join(tempDir, "split_test.csv")
+		sourceData := []byte("1,2,3\n4,5,6\n7,8,9\n")
+		require.NoError(t, os.WriteFile(fileName, sourceData, 0o644))
+		csvParser := getCSVParser(ctx, t, fileName)
+		defer func() {
+			require.NoError(t, csvParser.Close())
+		}()
+
+		metrics := tidbmetrics.GetRegisteredImportMetrics(promutil.NewDefaultFactory(),
+			prometheus.Labels{
+				proto.TaskIDLabelName: uuid.New().String(),
+			})
+		localCtx := metric.WithCommonMetric(ctx, metrics)
+		defer func() {
+			tidbmetrics.UnregisterImportMetrics(metrics)
+		}()
+
+		bak := importer.DefaultMinDeliverRowCnt
+		importer.DefaultMinDeliverRowCnt = 2
+		defer func() {
+			importer.DefaultMinDeliverRowCnt = bak
+		}()
+
+		dataWriter := mock.NewMockEngineWriter(ctrl)
+		indexWriter := mock.NewMockEngineWriter(ctrl)
+		dataWriter.EXPECT().AppendRows(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		indexWriter.EXPECT().AppendRows(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		chunkInfo := &checkpoints.ChunkCheckpoint{
+			Chunk: mydump.Chunk{EndOffset: int64(len(sourceData)), RowIDMax: 10000},
+		}
+		checksum := verify.NewKVGroupChecksumWithKeyspace(nil)
+
+		// Non-nil readerTimings triggers the split-histogram observation path.
+		// The csvParser here reads from a local *os.File (not a timed-reader
+		// wrapper), so s3Read / decompress stay zero — but the histogram
+		// observation MUST still happen with zero values, and parse must equal
+		// readDur. This test asserts that all three split labels are observed.
+		rt := importer.NewReaderTimings()
+
+		processor := importer.NewFileChunkProcessor(
+			csvParser, encoder, nil,
+			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter,
+			checksum, collector, rt,
+		)
+		require.NoError(t, processor.Process(localCtx))
+
+		// Assert the three split labels each received at least one observation.
+		s3ReadHist := metrics.ChunkProcessSecondsHistogram.WithLabelValues(metric.ChunkProcessOpS3Read).(prometheus.Histogram)
+		decompressHist := metrics.ChunkProcessSecondsHistogram.WithLabelValues(metric.ChunkProcessOpDecompress).(prometheus.Histogram)
+		parseHist := metrics.ChunkProcessSecondsHistogram.WithLabelValues(metric.ChunkProcessOpParse).(prometheus.Histogram)
+		encodeHist := metrics.ChunkProcessSecondsHistogram.WithLabelValues(metric.ChunkProcessOpEncode).(prometheus.Histogram)
+
+		require.GreaterOrEqual(t, *metric.ReadHistogram(s3ReadHist).Histogram.SampleCount, uint64(1),
+			"expected at least one s3_read observation")
+		require.GreaterOrEqual(t, *metric.ReadHistogram(decompressHist).Histogram.SampleCount, uint64(1),
+			"expected at least one decompress observation")
+		require.GreaterOrEqual(t, *metric.ReadHistogram(parseHist).Histogram.SampleCount, uint64(1),
+			"expected at least one parse observation")
+		require.GreaterOrEqual(t, *metric.ReadHistogram(encodeHist).Histogram.SampleCount, uint64(1),
+			"existing encode label must still be observed")
 	})
 
 	t.Run("encode error", func(t *testing.T) {
@@ -186,7 +252,7 @@ func TestFileChunkProcess(t *testing.T) {
 		}
 		processor := importer.NewFileChunkProcessor(
 			csvParser, encoder, nil,
-			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil,
+			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil, nil,
 		)
 		err2 := processor.Process(ctx)
 		require.ErrorIs(t, err2, common.ErrEncodeKV)
@@ -214,7 +280,7 @@ func TestFileChunkProcess(t *testing.T) {
 		}
 		processor := importer.NewFileChunkProcessor(
 			csvParser, encoder, nil,
-			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil,
+			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil, nil,
 		)
 		require.ErrorIs(t, processor.Process(ctx), common.ErrEncodeKV)
 		require.True(t, ctrl.Satisfied())
@@ -238,7 +304,7 @@ func TestFileChunkProcess(t *testing.T) {
 		}
 		processor := importer.NewFileChunkProcessor(
 			csvParser, encoder, nil,
-			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil,
+			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil, nil,
 		)
 		require.ErrorContains(t, processor.Process(ctx), "data write error")
 		require.True(t, ctrl.Satisfied())
@@ -263,7 +329,7 @@ func TestFileChunkProcess(t *testing.T) {
 		}
 		processor := importer.NewFileChunkProcessor(
 			csvParser, encoder, nil,
-			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil,
+			chunkInfo, logger.Logger, diskQuotaLock, dataWriter, indexWriter, nil, nil, nil,
 		)
 		require.ErrorContains(t, processor.Process(ctx), "index write error")
 		require.True(t, ctrl.Satisfied())

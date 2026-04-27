@@ -16,6 +16,7 @@ package importer
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -50,6 +51,11 @@ var (
 	DefaultMinDeliverBytes uint64 = 96 * units.KiB
 	// DefaultMinDeliverRowCnt see default for tikv-importer.max-kv-pairs.
 	DefaultMinDeliverRowCnt = 4096
+	// no-op histogram to avoid nil checks in hot path.
+	noopChunkProcessDurHist = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "noop_chunk_process_operation_seconds"},
+		[]string{"operation"},
+	)
 )
 
 type rowToEncode struct {
@@ -233,6 +239,13 @@ type chunkEncoder struct {
 	// total duration takes by read/encode.
 	readTotalDur   time.Duration
 	encodeTotalDur time.Duration
+	sendTotalDur   time.Duration
+	// split read-phase durations: s3 network wait, decompression, and parsing.
+	s3ReadTotalDur     time.Duration
+	decompressTotalDur time.Duration
+	parseTotalDur      time.Duration
+
+	readerTimings *ReaderTimings // nil when timing is not requested
 
 	groupChecksum *verify.KVGroupChecksum
 }
@@ -245,6 +258,7 @@ func newChunkEncoder(
 	collector execute.Collector,
 	encoder *TableKVEncoder,
 	keyspace []byte,
+	rt *ReaderTimings,
 ) *chunkEncoder {
 	return &chunkEncoder{
 		chunkName:        chunkName,
@@ -256,6 +270,7 @@ func newChunkEncoder(
 		keyspace:         keyspace,
 		minDeliverBytes:  DefaultMinDeliverBytes,
 		minDeliverRowCnt: DefaultMinDeliverRowCnt,
+		readerTimings:    rt,
 		groupChecksum:    verify.NewKVGroupChecksumWithKeyspace(keyspace),
 	}
 }
@@ -270,10 +285,12 @@ func (p *chunkEncoder) encodeLoop(ctx context.Context) error {
 		currOffset                              int64
 	)
 	metrics, _ := metric.GetCommonMetric(ctx)
+	chunkProcessDurHist := noopChunkProcessDurHist
 	if metrics != nil {
 		encodedBytesCounter = metrics.BytesCounter.WithLabelValues(metric.StateRestored)
 		// table name doesn't matter here, all those metrics will have task-id label.
 		encodedRowsCounter = metrics.RowsCounter.WithLabelValues(metric.StateRestored, "")
+		chunkProcessDurHist = metrics.ChunkProcessSecondsHistogram
 	}
 
 	recordSendReset := func() error {
@@ -316,9 +333,40 @@ func (p *chunkEncoder) encodeLoop(ctx context.Context) error {
 
 		p.groupChecksum.Add(kvGroupBatch.groupChecksum)
 
+		sendStart := time.Now()
 		if err := p.sendFn(ctx, kvGroupBatch); err != nil {
 			return err
 		}
+		sendDur := time.Since(sendStart)
+		p.sendTotalDur += sendDur
+
+		// Compute per-batch split of read duration:
+		//   readDur     = total time spent inside readFn this batch
+		//   s3Dur       = time accumulated in the timed reader wrapper (S3 wait;
+		//                 when source is compressed, also includes decompress CPU)
+		//   decompressDur = 0 for now (see newLoadDataParser comment)
+		//   parseDur    = readDur - s3Dur - decompressDur
+		// We Swap(0) to get the per-batch delta and reset for the next batch.
+		var s3Dur, decompressDur time.Duration
+		if p.readerTimings != nil {
+			s3Dur = time.Duration(p.readerTimings.s3Read.Swap(0))
+			decompressDur = time.Duration(p.readerTimings.decompress.Swap(0))
+		}
+		parseDur := readDur - s3Dur - decompressDur
+		if parseDur < 0 {
+			// Defensive clamp; can happen if the timed reader wrapped calls that
+			// weren't part of readFn's readDur window.
+			parseDur = 0
+		}
+		p.s3ReadTotalDur += s3Dur
+		p.decompressTotalDur += decompressDur
+		p.parseTotalDur += parseDur
+
+		chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpS3Read).Observe(s3Dur.Seconds())
+		chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpDecompress).Observe(decompressDur.Seconds())
+		chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpParse).Observe(parseDur.Seconds())
+		chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpEncode).Observe(encodeDur.Seconds())
+		chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpSend).Observe(sendDur.Seconds())
 
 		if p.collector != nil {
 			p.collector.Processed(totalKVBytes, int64(rowCount))
@@ -381,9 +429,37 @@ func (p *chunkEncoder) summaryFields() []zap.Field {
 	mergedChecksum := p.groupChecksum.MergedChecksum()
 	return []zap.Field{
 		zap.Duration("readDur", p.readTotalDur),
+		zap.Duration("s3ReadDur", p.s3ReadTotalDur),
+		zap.Duration("decompressDur", p.decompressTotalDur),
+		zap.Duration("parseDur", p.parseTotalDur),
 		zap.Duration("encodeDur", p.encodeTotalDur),
+		zap.Duration("sendDur", p.sendTotalDur),
 		zap.Object("checksum", &mergedChecksum),
 	}
+}
+
+// summaryBreakdown returns a pre-formatted one-line breakdown of where the
+// encode subtask spent its time. It's emitted at INFO level alongside the
+// structured task.End log so perf investigators can grep it easily during
+// IMPORT INTO runs. The *_pct values are computed against readTotalDur +
+// encodeTotalDur + sendTotalDur; when workers run in parallel this total
+// can exceed wall time.
+func (p *chunkEncoder) summaryBreakdown() string {
+	total := p.readTotalDur + p.encodeTotalDur + p.sendTotalDur
+	pct := func(d time.Duration) int {
+		if total == 0 {
+			return 0
+		}
+		return int(d * 100 / total)
+	}
+	return fmt.Sprintf(
+		"s3_read=%s decompress=%s parse=%s encode=%s send=%s total=%s"+
+			" s3_read_pct=%d%% decompress_pct=%d%% parse_pct=%d%% encode_pct=%d%% send_pct=%d%%",
+		p.s3ReadTotalDur, p.decompressTotalDur, p.parseTotalDur,
+		p.encodeTotalDur, p.sendTotalDur, total,
+		pct(p.s3ReadTotalDur), pct(p.decompressTotalDur), pct(p.parseTotalDur),
+		pct(p.encodeTotalDur), pct(p.sendTotalDur),
+	)
 }
 
 // ChunkProcessor is used to process a chunk of data, include encode data to KV
@@ -405,6 +481,7 @@ func (p *baseChunkProcessor) Process(ctx context.Context) (err error) {
 	defer func() {
 		logFields := append(p.enc.summaryFields(), p.deliver.summaryFields()...)
 		logFields = append(logFields, zap.Stringer("type", p.sourceType))
+		p.logger.Info("encode subtask done", zap.String("breakdown", p.enc.summaryBreakdown()))
 		task.End(zap.ErrorLevel, err, logFields...)
 		if metrics, ok := metric.GetCommonMetric(ctx); ok && err == nil {
 			metrics.ChunkCounter.WithLabelValues(metric.ChunkStateFinished).Inc()
@@ -441,6 +518,7 @@ func NewFileChunkProcessor(
 	indexWriter backend.EngineWriter,
 	groupChecksum *verify.KVGroupChecksum,
 	collector execute.Collector,
+	rt *ReaderTimings,
 ) ChunkProcessor {
 	chunkLogger := logger.With(zap.String("key", chunk.GetKey()))
 	deliver := &dataDeliver{
@@ -461,6 +539,7 @@ func NewFileChunkProcessor(
 			collector,
 			encoder,
 			keyspace,
+			rt,
 		),
 		logger:        chunkLogger,
 		groupChecksum: groupChecksum,
@@ -498,12 +577,14 @@ func (p *dataDeliver) deliverLoop(ctx context.Context) error {
 	)
 
 	metrics, _ := metric.GetCommonMetric(ctx)
+	chunkProcessDurHist := noopChunkProcessDurHist
 	if metrics != nil {
 		dataKVBytesHist = metrics.BlockDeliverBytesHistogram.WithLabelValues(metric.BlockDeliverKindData)
 		indexKVBytesHist = metrics.BlockDeliverBytesHistogram.WithLabelValues(metric.BlockDeliverKindIndex)
 		dataKVPairsHist = metrics.BlockDeliverKVPairsHistogram.WithLabelValues(metric.BlockDeliverKindData)
 		indexKVPairsHist = metrics.BlockDeliverKVPairsHistogram.WithLabelValues(metric.BlockDeliverKindIndex)
 		deliverBytesCounter = metrics.BytesCounter.WithLabelValues(metric.StateRestoreWritten)
+		chunkProcessDurHist = metrics.ChunkProcessSecondsHistogram
 	}
 
 	for {
@@ -526,18 +607,22 @@ func (p *dataDeliver) deliverLoop(ctx context.Context) error {
 			defer p.diskQuotaLock.RUnlock()
 
 			start := time.Now()
+			dataWriteStart := time.Now()
 			if err := p.dataWriter.AppendRows(ctx, nil, kv.MakeRowsFromKvPairs(kvBatch.dataKVs)); err != nil {
 				if !common.IsContextCanceledError(err) {
 					p.logger.Error("write to data engine failed", log.ShortError(err))
 				}
 				return errors.Trace(err)
 			}
+			dataWriteDur := time.Since(dataWriteStart)
+			indexWriteStart := time.Now()
 			if err := p.indexWriter.AppendRows(ctx, nil, kv.GroupedPairs(kvBatch.indexKVs)); err != nil {
 				if !common.IsContextCanceledError(err) {
 					p.logger.Error("write to index engine failed", log.ShortError(err))
 				}
 				return errors.Trace(err)
 			}
+			indexWriteDur := time.Since(indexWriteStart)
 
 			deliverDur := time.Since(start)
 			p.deliverTotalDur += deliverDur
@@ -552,6 +637,9 @@ func (p *dataDeliver) deliverLoop(ctx context.Context) error {
 				indexKVPairsHist.Observe(float64(indexKVCnt))
 				deliverBytesCounter.Add(float64(dataSize + indexSize))
 			}
+			chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpWriteData).Observe(dataWriteDur.Seconds())
+			chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpWriteIndex).Observe(indexWriteDur.Seconds())
+			chunkProcessDurHist.WithLabelValues(metric.ChunkProcessOpDeliver).Observe(deliverDur.Seconds())
 			return nil
 		}()
 		if err != nil {
@@ -606,6 +694,7 @@ func newQueryChunkProcessor(
 			collector,
 			encoder,
 			keyspace,
+			nil,
 		),
 		logger:        chunkLogger,
 		groupChecksum: groupChecksum,
