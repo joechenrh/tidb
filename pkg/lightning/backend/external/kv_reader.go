@@ -50,9 +50,24 @@ func NewKVReader(
 	initFileOffset uint64,
 	bufSize int,
 ) (*KVReader, error) {
+	// Keep existing behavior for non-merge callers.
 	// some test use very random buf size, might < 3
 	oneThird := max(bufSize/3, 1)
-	sr, err := openStoreReaderAndSeek(ctx, store, name, initFileOffset, oneThird*2)
+	return NewKVReaderWithPrefetchSize(ctx, name, store, initFileOffset, bufSize, oneThird*2)
+}
+
+// NewKVReaderWithPrefetchSize creates a KV reader with explicit prefetch size.
+func NewKVReaderWithPrefetchSize(
+	ctx context.Context,
+	name string,
+	store storeapi.Storage,
+	initFileOffset uint64,
+	bufSize int,
+	prefetchSize int,
+) (*KVReader, error) {
+	// some test use very random buf size, might < 3
+	oneThird := max(bufSize/3, 1)
+	sr, err := openStoreReaderAndSeek(ctx, store, name, initFileOffset, prefetchSize)
 	if err != nil {
 		return nil, err
 	}
