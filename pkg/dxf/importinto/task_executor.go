@@ -523,7 +523,7 @@ func (m *mergeSortStepExecutor) RunSubtask(ctx context.Context, subtask *proto.S
 		onWriterClose,
 		external.NewMergeCollector(ctx, &m.summary),
 		int(m.GetResource().CPU.Capacity()),
-		false,
+		true,
 		onDup,
 	)
 
