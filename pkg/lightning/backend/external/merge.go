@@ -276,6 +276,19 @@ func mergeOverlappingFilesInternal(
 	onDup engineapi.OnDuplicateKey,
 	fileGroupNum int,
 ) (err error) {
+	durationPct := func(d, total time.Duration) float64 {
+		if total <= 0 {
+			return 0
+		}
+		return float64(d) / float64(total)
+	}
+	var (
+		iterInitDur, writerInitDur  time.Duration
+		iterNextDur, writerWriteDur time.Duration
+		collectorDur                time.Duration
+		processedRows               int64
+		totalStart                  = time.Now()
+	)
 	failpoint.Inject("mergeOverlappingFilesInternal", func(val failpoint.Value) {
 		if v, ok := val.(int); ok {
 			switch v {
@@ -296,11 +309,29 @@ func mergeOverlappingFilesInternal(
 		zap.Int("file-count", len(paths)),
 	), "merge overlapping files")
 	defer func() {
+		totalDur := time.Since(totalStart)
+		logutil.Logger(ctx).Info(
+			"merge-sort operation summary",
+			zap.Duration("total", totalDur),
+			zap.Duration("iter-init", iterInitDur),
+			zap.Float64("iter-init-pct", durationPct(iterInitDur, totalDur)),
+			zap.Duration("writer-init", writerInitDur),
+			zap.Float64("writer-init-pct", durationPct(writerInitDur, totalDur)),
+			zap.Duration("iter-next", iterNextDur),
+			zap.Float64("iter-next-pct", durationPct(iterNextDur, totalDur)),
+			zap.Duration("writer-write", writerWriteDur),
+			zap.Float64("writer-write-pct", durationPct(writerWriteDur, totalDur)),
+			zap.Duration("collector", collectorDur),
+			zap.Float64("collector-pct", durationPct(collectorDur, totalDur)),
+			zap.Int64("processed-rows", processedRows),
+		)
 		task.End(zap.ErrorLevel, err)
 	}()
 
 	zeroOffsets := make([]uint64, len(paths))
+	iterInitStart := time.Now()
 	iter, err := NewMergeKVIter(ctx, paths, zeroOffsets, store, DefaultReadBufferSize, checkHotspot, fileGroupNum)
+	iterInitDur = time.Since(iterInitStart)
 	if err != nil {
 		return err
 	}
@@ -311,6 +342,7 @@ func mergeOverlappingFilesInternal(
 		}
 	}()
 
+	writerInitStart := time.Now()
 	writer := NewWriterBuilder().
 		SetMemorySizeLimit(defaultOneWriterMemSizeLimit).
 		SetBlockSize(blockSize).
@@ -318,6 +350,7 @@ func mergeOverlappingFilesInternal(
 		SetOnDup(onDup).
 		BuildOneFile(store, newFilePrefix, writerID)
 	writer.InitPartSizeAndLogger(ctx, partSize)
+	writerInitDur = time.Since(writerInitStart)
 	defer func() {
 		err2 := writer.Close(ctx)
 		if err2 == nil {
@@ -333,15 +366,26 @@ func mergeOverlappingFilesInternal(
 
 	// currently use same goroutine to do read and write. The main advantage is
 	// there's no KV copy and iter can reuse the buffer.
-	for iter.Next() {
+	for {
+		nextStart := time.Now()
+		ok := iter.Next()
+		iterNextDur += time.Since(nextStart)
+		if !ok {
+			break
+		}
 		key, value := iter.Key(), iter.Value()
+		writeStart := time.Now()
 		err = writer.WriteRow(ctx, key, value)
+		writerWriteDur += time.Since(writeStart)
 		if err != nil {
 			return err
 		}
+		processedRows++
 
 		if collector != nil {
+			collectorStart := time.Now()
 			collector.Processed(int64(len(key)+len(value)), 1)
+			collectorDur += time.Since(collectorStart)
 		}
 	}
 	return iter.Error()
