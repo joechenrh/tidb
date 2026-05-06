@@ -26,6 +26,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/docker/go-units"
 	"github.com/pingcap/errors"
@@ -292,6 +293,90 @@ func GetMaxOverlapping(points []Endpoint) int64 {
 		}
 	}
 	return maxWeight
+}
+
+// GetMaxOverlappingTotalByFileStats calculates overlap from per-file key ranges
+// extracted from each stat file instead of coarse MultipleFilesStat buckets.
+func GetMaxOverlappingTotalByFileStats(
+	ctx context.Context,
+	stats []MultipleFilesStat,
+	exStorage storeapi.Storage,
+) (int64, error) {
+	type fileRange struct {
+		minKey []byte
+		maxKey []byte
+	}
+
+	statFiles := make([]string, 0, 1024)
+	for _, ms := range stats {
+		for _, pair := range ms.Filenames {
+			if pair[1] != "" {
+				statFiles = append(statFiles, pair[1])
+			}
+		}
+	}
+	if len(statFiles) == 0 {
+		return 0, nil
+	}
+
+	fileRanges := make([]fileRange, len(statFiles))
+	var fileRangesMu sync.Mutex
+	eg, egCtx := util.NewErrorGroupWithRecoverWithCtx(ctx)
+	eg.SetLimit(getReadRangeFromPropsConcurrency)
+	for i := range statFiles {
+		idx := i
+		eg.Go(func() error {
+			rd, err := newStatsReader(egCtx, exStorage, statFiles[idx], 250*1024)
+			if err != nil {
+				if goerrors.Is(err, io.EOF) {
+					return nil
+				}
+				return errors.Annotatef(err, "open stats file %s", statFiles[idx])
+			}
+			defer rd.Close()
+
+			prop, err := rd.nextProp()
+			if err != nil {
+				if goerrors.Is(err, io.EOF) {
+					return nil
+				}
+				return errors.Annotatef(err, "read first property from stats file %s", statFiles[idx])
+			}
+			minKey := slices.Clone(prop.firstKey)
+			maxKey := slices.Clone(prop.lastKey)
+			for {
+				prop, err = rd.nextProp()
+				if err != nil {
+					if goerrors.Is(err, io.EOF) {
+						break
+					}
+					return errors.Annotatef(err, "read property from stats file %s", statFiles[idx])
+				}
+				maxKey = slices.Clone(prop.lastKey)
+			}
+
+			fileRangesMu.Lock()
+			fileRanges[idx] = fileRange{minKey: minKey, maxKey: maxKey}
+			fileRangesMu.Unlock()
+			return nil
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		return 0, err
+	}
+
+	points := make([]Endpoint, 0, len(fileRanges)*2)
+	for _, r := range fileRanges {
+		if len(r.minKey) == 0 && len(r.maxKey) == 0 {
+			continue
+		}
+		points = append(points, Endpoint{Key: r.minKey, Tp: InclusiveStart, Weight: 1})
+		points = append(points, Endpoint{Key: r.maxKey, Tp: InclusiveEnd, Weight: 1})
+	}
+	if len(points) == 0 {
+		return 0, nil
+	}
+	return GetMaxOverlapping(points), nil
 }
 
 // SortedKVMeta is the meta of sorted kv.

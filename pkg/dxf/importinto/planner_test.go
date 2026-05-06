@@ -311,7 +311,7 @@ func TestGetSortedKVMetas(t *testing.T) {
 			proto.ImportStepMergeSort:     mergeStepMetas,
 		},
 		ThreadCnt: 16,
-	}, &LogicalPlan{}, nil)
+	}, nil)
 	require.NoError(t, err)
 	require.Len(t, allKVMetas, 2)
 	require.Equal(t, []byte("x_0_a"), allKVMetas["data"].StartKey)

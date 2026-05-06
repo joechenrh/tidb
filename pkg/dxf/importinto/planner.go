@@ -400,14 +400,43 @@ func generateImportSpecs(pCtx planner.PlanCtx, p *LogicalPlan) ([]planner.Pipeli
 	return importSpecs, nil
 }
 
-func skipMergeSort(kvGroup string, stats []external.MultipleFilesStat, concurrency int) bool {
+func skipMergeSort(
+	ctx context.Context,
+	store storeapi.Storage,
+	kvGroup string,
+	stats []external.MultipleFilesStat,
+	concurrency int,
+) bool {
 	failpoint.Inject("forceMergeSort", func(val failpoint.Value) {
 		in := val.(string)
 		if in == kvGroup || in == "*" {
 			failpoint.Return(false)
 		}
 	})
-	return external.GetMaxOverlappingTotal(stats) <= external.GetAdjustedMergeSortOverlapThreshold(concurrency)
+	threshold := external.GetAdjustedMergeSortOverlapThreshold(concurrency)
+	coarseOverlap := external.GetMaxOverlappingTotal(stats)
+	if coarseOverlap <= threshold {
+		return true
+	}
+	preciseOverlap, err := external.GetMaxOverlappingTotalByFileStats(ctx, stats, store)
+	if err != nil {
+		logutil.Logger(ctx).Warn(
+			"fallback to coarse overlap when precise overlap calculation fails",
+			zap.String("kv-group", kvGroup),
+			zap.Int64("coarse-overlap", coarseOverlap),
+			zap.Int64("threshold", threshold),
+			zap.Error(err),
+		)
+		return false
+	}
+	logutil.Logger(ctx).Info(
+		"merge-sort overlap check",
+		zap.String("kv-group", kvGroup),
+		zap.Int64("coarse-overlap", coarseOverlap),
+		zap.Int64("precise-overlap", preciseOverlap),
+		zap.Int64("threshold", threshold),
+	)
+	return preciseOverlap <= threshold
 }
 
 func generateMergeSortSpecs(planCtx planner.PlanCtx, p *LogicalPlan) ([]planner.PipelineSpec, error) {
@@ -430,7 +459,7 @@ func generateMergeSortSpecs(planCtx planner.PlanCtx, p *LogicalPlan) ([]planner.
 			logutil.Logger(planCtx.Ctx).Info("skip merge-sort for empty kv group", zap.String("kv-group", kvGroup))
 			continue
 		}
-		if !p.Plan.ForceMergeStep && skipMergeSort(kvGroup, kvMeta.MultipleFilesStats, planCtx.ThreadCnt) {
+		if !p.Plan.ForceMergeStep && skipMergeSort(planCtx.Ctx, store, kvGroup, kvMeta.MultipleFilesStats, planCtx.ThreadCnt) {
 			logutil.Logger(planCtx.Ctx).Info("skip merge sort for kv group",
 				zap.Int64("task-id", planCtx.TaskID),
 				zap.String("kv-group", kvGroup))
@@ -468,7 +497,7 @@ func generateWriteIngestSpecs(planCtx planner.PlanCtx, p *LogicalPlan) ([]planne
 	// kvMetas contains data kv meta and all index kv metas.
 	// each kvMeta will be split into multiple range group individually,
 	// i.e. data and index kv will NOT be in the same subtask.
-	kvMetas, err := getSortedKVMetasForIngest(planCtx, p, store)
+	kvMetas, err := getSortedKVMetasForIngest(planCtx, store)
 	if err != nil {
 		return nil, err
 	}
@@ -663,7 +692,7 @@ func getSortedKVMetasOfMergeStep(ctx context.Context, subTaskMetas [][]byte, sto
 	return result, nil
 }
 
-func getSortedKVMetasForIngest(planCtx planner.PlanCtx, p *LogicalPlan, store storeapi.Storage) (map[string]*external.SortedKVMeta, error) {
+func getSortedKVMetasForIngest(planCtx planner.PlanCtx, store storeapi.Storage) (map[string]*external.SortedKVMeta, error) {
 	kvMetasOfMergeSort, err := getSortedKVMetasOfMergeStep(planCtx.Ctx, planCtx.PreviousSubtaskMetas[proto.ImportStepMergeSort], store)
 	if err != nil {
 		return nil, err
@@ -673,15 +702,9 @@ func getSortedKVMetasForIngest(planCtx planner.PlanCtx, p *LogicalPlan, store st
 		return nil, err
 	}
 	for kvGroup, kvMeta := range kvMetasOfEncodeStep {
-		// only part of kv files are merge sorted. we need to merge kv metas that
-		// are not merged into the kvMetasOfMergeSort.
-		if !p.Plan.ForceMergeStep && skipMergeSort(kvGroup, kvMeta.MultipleFilesStats, planCtx.ThreadCnt) {
-			if _, ok := kvMetasOfMergeSort[kvGroup]; ok {
-				// this should not happen, because we only generate merge sort
-				// subtasks for those kv groups with MaxOverlappingTotal > mergeSortOverlapThreshold
-				logutil.Logger(planCtx.Ctx).Error("kv group of encode step conflict with merge sort step")
-				return nil, errors.New("kv group of encode step conflict with merge sort step")
-			}
+		// only part of kv files are merge sorted. if a kv group has no merge-step
+		// meta, use encode-step meta directly.
+		if _, ok := kvMetasOfMergeSort[kvGroup]; !ok {
 			kvMetasOfMergeSort[kvGroup] = kvMeta
 		}
 	}

@@ -369,6 +369,55 @@ func TestGetMaxOverlapping(t *testing.T) {
 	require.EqualValues(t, 3, GetMaxOverlapping(points))
 }
 
+func TestGetMaxOverlappingTotalByFileStats(t *testing.T) {
+	ctx := context.Background()
+	store := objstore.NewMemStorage()
+	writeStatFile := func(path string, firstKey, lastKey byte) {
+		w, err := store.Create(ctx, path, nil)
+		require.NoError(t, err)
+		prop := &rangeProperty{
+			firstKey: []byte{firstKey},
+			lastKey:  []byte{lastKey},
+			size:     1,
+			keys:     1,
+		}
+		_, err = w.Write(ctx, encodeMultiProps(nil, []*rangeProperty{prop}))
+		require.NoError(t, err)
+		require.NoError(t, w.Close(ctx))
+	}
+	writeStatFile("/s1", 1, 2)
+	writeStatFile("/s2", 3, 4)
+	writeStatFile("/s3", 5, 6)
+	writeStatFile("/s4", 7, 8)
+
+	stats := []MultipleFilesStat{
+		{
+			MinKey:            []byte{1},
+			MaxKey:            []byte{8},
+			MaxOverlappingNum: 100,
+			Filenames: [][2]string{
+				{"/d1", "/s1"},
+				{"/d2", "/s2"},
+			},
+		},
+		{
+			MinKey:            []byte{1},
+			MaxKey:            []byte{8},
+			MaxOverlappingNum: 100,
+			Filenames: [][2]string{
+				{"/d3", "/s3"},
+				{"/d4", "/s4"},
+			},
+		},
+	}
+	coarse := GetMaxOverlappingTotal(stats)
+	require.EqualValues(t, 200, coarse)
+
+	precise, err := GetMaxOverlappingTotalByFileStats(ctx, stats, store)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, precise)
+}
+
 func TestSortedKVMeta(t *testing.T) {
 	summary := []*WriterSummary{
 		{
