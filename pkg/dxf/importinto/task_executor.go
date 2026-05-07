@@ -514,6 +514,12 @@ func (m *mergeSortStepExecutor) RunSubtask(ctx context.Context, subtask *proto.S
 	}
 
 	wctx := workerpool.NewContext(ctx)
+	mergeSplitConcurrency := int(m.GetResource().CPU.Capacity())
+	mergeOpConcurrency := max(1, mergeSplitConcurrency/3)
+	logger.Info("merge sort concurrency settings",
+		zap.Int("split-concurrency", mergeSplitConcurrency),
+		zap.Int("operator-concurrency", mergeOpConcurrency),
+	)
 	op := external.NewMergeOperator(
 		wctx,
 		objStore,
@@ -522,7 +528,7 @@ func (m *mergeSortStepExecutor) RunSubtask(ctx context.Context, subtask *proto.S
 		external.DefaultOneWriterBlockSize,
 		onWriterClose,
 		external.NewMergeCollector(ctx, &m.summary),
-		int(m.GetResource().CPU.Capacity()),
+		mergeOpConcurrency,
 		true,
 		onDup,
 	)
@@ -530,7 +536,7 @@ func (m *mergeSortStepExecutor) RunSubtask(ctx context.Context, subtask *proto.S
 	if err = external.MergeOverlappingFiles(
 		wctx,
 		sm.DataFiles,
-		int(m.GetResource().CPU.Capacity()), // the concurrency used to split subtask
+		mergeSplitConcurrency, // the concurrency used to split subtask
 		op,
 	); err != nil {
 		return errors.Trace(err)
