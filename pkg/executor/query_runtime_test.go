@@ -34,7 +34,6 @@ import (
 	"github.com/pingcap/tidb/pkg/session"
 	"github.com/pingcap/tidb/pkg/testkit"
 	"github.com/pingcap/tidb/pkg/testkit/testfailpoint"
-	"github.com/pingcap/tidb/pkg/util/dbterror/plannererrors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,6 +59,15 @@ func TestImportQueryPlanExecution(t *testing.T) {
 		"select i from query_src use index(idx_i) order by i limit 2",
 		"with c as (select /*+ MERGE() */ i from query_src) select i from c",
 		"select /*+ INL_JOIN(b) */ a.i from query_src a join query_src b use index(idx_i) on a.i=b.i",
+		// These operators used to be rejected on an import worker; they now run
+		// like any other TiDB-side operator, spilling to local disk if needed.
+		"select /*+ HASH_AGG() */ g,count(*) from query_src group by g",
+		"select /*+ HASH_AGG() */ g,count(*)+1 from query_src group by g",
+		"select i from query_src order by g",
+		"select i from query_src order by g limit 2",
+		"select /*+ HASH_JOIN(a,b) */ a.i from query_src a join query_src b on a.i=b.i",
+		"select /*+ MERGE_JOIN(a,b) */ a.i from query_src a join query_src b on a.i=b.i",
+		"with recursive c(i) as (select 1 union all select i+1 from c where i<3) select i from c",
 	}
 	tk.MustExec("set tidb_mem_quota_query=16777216")
 	for _, mode := range []string{"", "NO_BACKSLASH_ESCAPES"} {
@@ -121,31 +129,6 @@ func TestImportQueryPlanExecution(t *testing.T) {
 			})
 		}
 	}
-	t.Run("reject local spill operators", func(t *testing.T) {
-		for _, tt := range []struct{ sql, operator string }{
-			{"select /*+ HASH_AGG() */ g,count(*) from query_src group by g", "HashAgg"},
-			{"select /*+ HASH_AGG() */ g,count(*)+1 from query_src group by g", "HashAgg"},
-			{"select i from query_src order by g", "Sort"},
-			{"select i from query_src order by g limit 2", "TopN"},
-			{"select /*+ HASH_JOIN(a,b) */ a.i from query_src a join query_src b on a.i=b.i", "HashJoin"},
-			{"select /*+ MERGE_JOIN(a,b) */ a.i from query_src a join query_src b on a.i=b.i", "MergeJoin"},
-			{"with recursive c(i) as (select 1 union all select i+1 from c where i<3) select i from c", "CTE"},
-		} {
-			t.Run(tt.operator+"/"+tt.sql, func(t *testing.T) {
-				require.NoError(t, tk.Session().PrepareTxnCtx(context.Background(), nil))
-				sql := "import into unused_target from (" + tt.sql + ")"
-				q, err := executor.CaptureImportQuery(tk.Session(), sql)
-				require.NoError(t, err)
-				se, err := session.CreateSession4Test(store)
-				require.NoError(t, err)
-				defer se.Close()
-				output := make(chan importer.QueryChunk, 16)
-				err = importer.RunImportQuery(context.Background(), se, q, sql, 1<<20, output)
-				require.ErrorIs(t, err, plannererrors.ErrNotSupportedYet)
-				require.ErrorContains(t, err, "TiDB "+tt.operator)
-			})
-		}
-	})
 	t.Run("source tables", func(t *testing.T) {
 		tk.MustExec("create table query_other(i int)")
 		require.NoError(t, tk.Session().PrepareTxnCtx(context.Background(), nil))

@@ -58,6 +58,9 @@ func TestImportFromQueryGlobalSort(t *testing.T) {
 	// A background sysvar refresh must retain the configured storage URI.
 	domain.GetDomain(tk.Session()).NotifyUpdateSysVarCache(true)
 	require.Equal(t, sortURI, vardef.CloudStorageURI.Load())
+	// The Query source route is only reachable from materialized view maintenance;
+	// simulate that precondition so this test can exercise it directly.
+	tk.Session().GetSessionVars().InMViewMaintenance = true
 	query := "select /*+ STREAM_AGG() */ i,count(*),count(v),sum(v),min(v),max(v) from query_import_src use index(idx_i) where i>0 group by i"
 	target := "query_import_dst"
 	tk.MustExec(fmt.Sprintf("create table %s(g bigint, c bigint, cv bigint, s decimal(42,2), lo decimal(20,2), hi decimal(20,2), key(g))", target))

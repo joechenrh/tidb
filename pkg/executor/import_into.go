@@ -488,13 +488,13 @@ func cancelDanglingImportJob(ctx context.Context, jobID int64) error {
 
 // prepareQuery captures source metadata for the Query step.
 func (e *ImportIntoExec) prepareQuery(_ context.Context) error {
+	// This path is only reachable from materialized view maintenance, not from
+	// a user-issued statement.
+	if !e.userSctx.GetSessionVars().InMViewMaintenance {
+		return plannererrors.ErrNotSupportedYet.GenWithStackByArgs("IMPORT INTO FROM SELECT outside materialized view maintenance")
+	}
 	if e.controller.IsLocalSort() {
 		return plannererrors.ErrNotSupportedYet.GenWithStackByArgs("IMPORT INTO FROM SELECT without global sort storage")
-	}
-	// Reuse the submitting SELECT plan for early rejection. The worker checks
-	// its own optimized plan again because it may choose different operators.
-	if err := checkImportQueryPlan(e.plan.SelectPlan); err != nil {
-		return err
 	}
 	query, err := CaptureImportQuery(e.userSctx, e.plan.Stmt)
 	if err != nil {

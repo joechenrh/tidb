@@ -115,6 +115,11 @@ func (s *mockGCSSuite) TestPreCheckCDCPiTRTasks() {
 		previousURI := vardef.CloudStorageURI.Load()
 		vardef.CloudStorageURI.Store(realtikvtest.GetNextGenObjStoreURI("precheck-import-query"))
 		s.T().Cleanup(func() { vardef.CloudStorageURI.Store(previousURI) })
+		// The Query source route is only reachable from materialized view
+		// maintenance; simulate that precondition to exercise it here.
+		vars := s.tk.Session().GetSessionVars()
+		vars.InMViewMaintenance = true
+		s.T().Cleanup(func() { vars.InMViewMaintenance = false })
 	}
 	err = s.tk.ExecToErr("import into dst from select * from t")
 	log.Error("error", zap.Error(err))

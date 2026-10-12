@@ -493,6 +493,24 @@ func TestImportIntoRejectsMaterializedViewLogBaseTable(t *testing.T) {
 	require.ErrorContains(t, err, "IMPORT INTO on tables with materialized view log")
 }
 
+func TestImportFromSelectRequiresMaterializedViewMaintenance(t *testing.T) {
+	if kerneltype.IsClassic() {
+		t.Skip("the Query source route is nextgen only")
+	}
+	store := testkit.CreateMockStore(t)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("create table src (a int)")
+	tk.MustExec("create table dst (a int)")
+	vardef.CloudStorageURI.Store("s3://query-not-internal")
+	t.Cleanup(func() { vardef.CloudStorageURI.Store("") })
+
+	// A plain user session must not reach the Query source route.
+	require.False(t, tk.Session().GetSessionVars().InMViewMaintenance)
+	err := tk.ExecToErr("import into dst from select * from src with disable_precheck")
+	require.ErrorContains(t, err, "IMPORT INTO FROM SELECT outside materialized view maintenance")
+}
+
 func TestImportQueryRouting(t *testing.T) {
 	store, dom := testkit.CreateMockStoreAndDomain(t)
 	tk := testkit.NewTestKit(t, store)
@@ -502,6 +520,12 @@ func TestImportQueryRouting(t *testing.T) {
 	oldURI, oldDist := vardef.CloudStorageURI.Load(), vardef.EnableDistTask.Load()
 	t.Cleanup(func() { vardef.CloudStorageURI.Store(oldURI); vardef.EnableDistTask.Store(oldDist) })
 	testfailpoint.Enable(t, "github.com/pingcap/tidb/pkg/executor/mockImportFromSelectSetupErr", `return(true)`)
+	// The Query source route is only reachable from materialized view maintenance;
+	// simulate that precondition so this test can exercise the routing logic below it.
+	vars := tk.Session().GetSessionVars()
+	originalMaintenance := vars.InMViewMaintenance
+	vars.InMViewMaintenance = true
+	t.Cleanup(func() { vars.InMViewMaintenance = originalMaintenance })
 	for _, enabled := range []bool{false, true} {
 		vardef.EnableDistTask.Store(enabled)
 		for _, uri := range []string{"", "s3://query-sort"} {
@@ -521,23 +545,23 @@ func TestImportQueryRouting(t *testing.T) {
 			}
 		}
 	}
-	t.Run("reject unsupported plan before submission", func(t *testing.T) {
+	t.Run("allow plan shapes that used to be rejected", func(t *testing.T) {
 		vardef.EnableDistTask.Store(true)
 		vardef.CloudStorageURI.Store("s3://query-sort")
 		tk.MustExec("delete from query_route_dst")
 		if kerneltype.IsNextGen() {
-			// The plan check must precede even the target-table precheck.
+			// These queries now run like any other TiDB-side operator, so they
+			// reach the same target-table precheck as everything else.
 			tk.MustExec("insert into query_route_dst values (1)")
 		}
-		for _, tt := range []struct{ sql, operator string }{
-			{"select /*+ HASH_AGG() */ count(*) from query_route_src group by id", "HashAgg"},
-			{"select id from query_route_src order by id", "Sort"},
-			{"select id from query_route_src order by id limit 1", "TopN"},
+		for _, sql := range []string{
+			"select /*+ HASH_AGG() */ count(*) from query_route_src group by id",
+			"select id from query_route_src order by id",
+			"select id from query_route_src order by id limit 1",
 		} {
-			err := tk.ExecToErr("import into query_route_dst from (" + tt.sql + ") with disable_precheck")
+			err := tk.ExecToErr("import into query_route_dst from (" + sql + ") with disable_precheck")
 			if kerneltype.IsNextGen() {
-				require.ErrorIs(t, err, plannererrors.ErrNotSupportedYet)
-				require.ErrorContains(t, err, "TiDB "+tt.operator)
+				require.ErrorContains(t, err, "target table is not empty")
 			} else {
 				require.ErrorContains(t, err, "mock import from select setup error")
 			}

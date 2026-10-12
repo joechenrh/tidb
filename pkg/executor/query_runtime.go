@@ -27,7 +27,6 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	plannercore "github.com/pingcap/tidb/pkg/planner/core"
 	"github.com/pingcap/tidb/pkg/planner/core/base"
-	"github.com/pingcap/tidb/pkg/planner/core/operator/physicalop"
 	"github.com/pingcap/tidb/pkg/planner/core/resolve"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
@@ -156,24 +155,6 @@ func (c *importQueryVariableChecker) Leave(node ast.Node) bool {
 	return c.err == nil
 }
 
-// checkImportQueryPlan visits the final TiDB plan. Reader cop/MPP subplans are
-// stored separately from Children(), so their operators remain unrestricted.
-func checkImportQueryPlan(p base.PhysicalPlan) error {
-	switch p.(type) {
-	case *physicalop.PhysicalHashAgg, *physicalop.PhysicalSort, *physicalop.PhysicalTopN,
-		*physicalop.PhysicalHashJoin, *physicalop.PhysicalMergeJoin,
-		*physicalop.PhysicalCTE, *physicalop.PhysicalCTETable:
-		return plannererrors.ErrNotSupportedYet.GenWithStackByArgs(
-			"TiDB " + p.TP() + " with local spilling on an import worker")
-	}
-	for _, child := range p.Children() {
-		if err := checkImportQueryPlan(child); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func runImportQuery(
 	ctx context.Context, sctx sessionctx.Context,
 	q *importer.QueryPlan, sql string, memoryLimit int64,
@@ -227,9 +208,6 @@ func buildImportQueryExecutor(
 	p, ok := stmt.Plan.(base.PhysicalPlan)
 	if !ok {
 		return nil, errors.New("import query did not produce a physical SELECT plan")
-	}
-	if err := checkImportQueryPlan(p); err != nil {
-		return nil, err
 	}
 	failpoint.InjectCall("afterImportQueryOptimize", p)
 	failpoint.Inject("failAfterImportQueryOptimize", func() {
