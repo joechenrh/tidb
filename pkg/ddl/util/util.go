@@ -366,7 +366,7 @@ func PutKVToEtcdMono(ctx context.Context, etcdCli *clientv3.Client, retryCnt int
 // etcdCli is client of etcd.
 // retryCnt is retry time when an error occurs.
 // opts are configures of etcd Operations.
-func PutKVToEtcd(ctx context.Context, etcdCli *clientv3.Client, retryCnt int, key, val string,
+func PutKVToEtcd(ctx context.Context, etcdCli clientv3.KV, retryCnt int, key, val string,
 	opts ...clientv3.OpOption) error {
 	var err error
 	for i := range retryCnt {
