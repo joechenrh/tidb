@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
+	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/parser/auth"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/resourcegroup"
@@ -133,14 +134,10 @@ func UpdateMinStartTS(pi *ProcessInfo, lowerLimit, minStartTS uint64) uint64 {
 	if pi.StmtCtx != nil && pi.StmtCtx.IsDDLJobInQueue.Load() {
 		return minStartTS
 	}
-	if ts := pi.CurTxnStartTS; ts > lowerLimit && ts < minStartTS {
-		minStartTS = ts
-	}
+	minStartTS = kv.UpdateMinStartTS(pi.CurTxnStartTS, lowerLimit, minStartTS)
 	if pi.CursorTracker != nil {
 		pi.CursorTracker.RangeCursor(func(c cursor.Handle) bool {
-			if startTS := c.GetState().StartTS; startTS > lowerLimit && startTS < minStartTS {
-				minStartTS = startTS
-			}
+			minStartTS = kv.UpdateMinStartTS(c.GetState().StartTS, lowerLimit, minStartTS)
 			return true
 		})
 	}

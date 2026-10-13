@@ -363,7 +363,9 @@ func PutKVToEtcdMono(ctx context.Context, etcdCli *clientv3.Client, retryCnt int
 }
 
 // PutKVToEtcd puts key value to etcd.
-// etcdCli is client of etcd.
+// etcdCli is the KV interface to write through; a *clientv3.Client already
+// satisfies it, but a caller may also pass a differently-namespaced KV (see
+// clientv3.NewKV) to control where the key lands.
 // retryCnt is retry time when an error occurs.
 // opts are configures of etcd Operations.
 func PutKVToEtcd(ctx context.Context, etcdCli clientv3.KV, retryCnt int, key, val string,

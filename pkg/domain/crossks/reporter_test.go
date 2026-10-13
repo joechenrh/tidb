@@ -83,7 +83,7 @@ func TestCrossKSMinStartTSReporter(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(lease.Orphan)
 			coordinator := newSchemaCoordinator()
-			r := &minStartTSReporter{coordinator: coordinator, etcdCli: cli, serverID: "query-worker"}
+			r := &minStartTSReporter{ctx: context.Background(), coordinator: coordinator, etcdCli: cli, serverID: "query-worker"}
 			store := &reportTSStore{codec: codec, version: kv.NewVersion(currentTS)}
 			rootPath := infosync.ServerMinStartTSPath + "/query-worker"
 			path, otherPath := rootPath, prefix+rootPath

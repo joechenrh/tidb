@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
+	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/session/sessionapi"
 	"github.com/pingcap/tidb/pkg/session/sessmgr"
 	"github.com/pingcap/tidb/pkg/sessionctx"
@@ -97,9 +98,7 @@ func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 		// SetProcessInfo/UpdateProcessInfo call, so read the live txn info too.
 		if sess, ok := se.(sessionapi.Session); ok {
 			if txnInfo := sess.TxnInfo(); txnInfo != nil {
-				if ts := txnInfo.StartTS; ts > lowerLimit && ts < minStartTS {
-					minStartTS = ts
-				}
+				minStartTS = kv.UpdateMinStartTS(txnInfo.StartTS, lowerLimit, minStartTS)
 			}
 		}
 

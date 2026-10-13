@@ -655,17 +655,13 @@ func (is *InfoSyncer) ReportMinStartTS(store kv.Storage, session *concurrency.Se
 	for _, innerTS := range innerSessionStartTSList {
 		logutil.BgLogger().Debug("ReportMinStartTS", zap.Uint64("Internal Session Transaction StartTS", innerTS))
 		kv.PrintLongTimeInternalTxn(now, innerTS, false)
-		if innerTS > startTSLowerLimit && innerTS < minStartTS {
-			minStartTS = innerTS
-		}
+		minStartTS = kv.UpdateMinStartTS(innerTS, startTSLowerLimit, minStartTS)
 	}
 
 	if is.infoCache != nil {
 		schemaTS := is.infoCache.GetAndResetRecentInfoSchemaTS(currentVer.Ver)
 		logutil.BgLogger().Debug("ReportMinStartTS", zap.Uint64("InfoSchema Recent StartTS", schemaTS))
-		if schemaTS > startTSLowerLimit && schemaTS < minStartTS {
-			minStartTS = schemaTS
-		}
+		minStartTS = kv.UpdateMinStartTS(schemaTS, startTSLowerLimit, minStartTS)
 	}
 
 	is.minStartTS = kv.GetMinInnerTxnStartTS(now, startTSLowerLimit, minStartTS)

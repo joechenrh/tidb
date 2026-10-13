@@ -103,6 +103,16 @@ func PrintLongTimeInternalTxn(now time.Time, startTS uint64, runByFunction bool)
 	}
 }
 
+// UpdateMinStartTS returns candidate in place of minStartTS if candidate is
+// older than minStartTS but not so old that it falls at or below lowerLimit
+// (the GC max-wait-time floor); otherwise it returns minStartTS unchanged.
+func UpdateMinStartTS(candidate, lowerLimit, minStartTS uint64) uint64 {
+	if candidate > lowerLimit && candidate < minStartTS {
+		minStartTS = candidate
+	}
+	return minStartTS
+}
+
 // RunInNewTxn will run the f in a new transaction environment, should be used by inner txn only.
 func RunInNewTxn(ctx context.Context, store Storage, retryable bool, f func(ctx context.Context, txn Transaction) error) error {
 	var (

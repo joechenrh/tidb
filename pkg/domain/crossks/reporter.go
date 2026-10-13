@@ -21,6 +21,7 @@ import (
 	ddlutil "github.com/pingcap/tidb/pkg/ddl/util"
 	"github.com/pingcap/tidb/pkg/domain/infosync"
 	"github.com/pingcap/tidb/pkg/domain/serverinfo"
+	"github.com/pingcap/tidb/pkg/infoschema"
 	"github.com/pingcap/tidb/pkg/keyspace"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
@@ -33,9 +34,13 @@ import (
 )
 
 type minStartTSReporter struct {
+	ctx         context.Context
 	coordinator *schemaCoordinator
 	etcdCli     *clientv3.Client
 	serverID    string
+	// infoCache is set after the session manager creates its InfoCache; nil
+	// until then (see createSessionManager).
+	infoCache *infoschema.InfoCache
 }
 
 // ReportMinStartTS reports self server min start timestamp to ETCD.
@@ -54,6 +59,14 @@ func (r *minStartTSReporter) ReportMinStartTS(store kv.Storage, session *concurr
 	// GCMaxWaitTime is in seconds, GCMaxWaitTime * 1000 converts it to milliseconds.
 	lowerLimit := oracle.GoTimeToLowerLimitStartTS(now, vardef.GCMaxWaitTime.Load()*1000)
 	minStartTS := r.coordinator.minStartTS(lowerLimit, oracle.GoTimeToTS(now))
+	// Also protect any InfoSchema V2 instance a cross-keyspace caller is still
+	// using, the same way InfoSyncer.ReportMinStartTS does; otherwise GC can
+	// advance past it and a later lazy table load fails with "GC life time is
+	// shorter than transaction duration".
+	if r.infoCache != nil {
+		schemaTS := r.infoCache.GetAndResetRecentInfoSchemaTS(currentVer.Ver)
+		minStartTS = kv.UpdateMinStartTS(schemaTS, lowerLimit, minStartTS)
+	}
 
 	path := infosync.ServerMinStartTSPath + "/" + r.serverID
 	codec := store.GetCodec()
@@ -63,7 +76,7 @@ func (r *minStartTSReporter) ReportMinStartTS(store kv.Storage, session *concurr
 	// r.etcdCli is namespaced for user SQL metadata; bypass that with a raw KV
 	// connection so unified GC can report at the un-namespaced root path.
 	client := clientv3.NewKV(r.etcdCli)
-	err = ddlutil.PutKVToEtcd(context.Background(), client, serverinfo.KeyOpDefaultRetryCnt, path,
+	err = ddlutil.PutKVToEtcd(r.ctx, client, serverinfo.KeyOpDefaultRetryCnt, path,
 		strconv.FormatUint(minStartTS, 10),
 		clientv3.WithLease(session.Lease()))
 	if err != nil {

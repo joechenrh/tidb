@@ -268,6 +268,7 @@ func (*Manager) createSessionManager(
 	}()
 
 	virtualSvrID := uuid.New().String()
+	minTSReporter := &minStartTSReporter{ctx: ctx, coordinator: coordinator, etcdCli: etcdCli, serverID: virtualSvrID}
 	svrInfoSyncer = serverinfo.NewCrossKSSyncer(
 		virtualSvrID,
 		func() uint64 {
@@ -276,7 +277,7 @@ func (*Manager) createSessionManager(
 			return 0
 		},
 		etcdCli,
-		&minStartTSReporter{coordinator: coordinator, etcdCli: etcdCli, serverID: virtualSvrID},
+		minTSReporter,
 		ks,
 	)
 	if err = svrInfoSyncer.NewSessionAndStoreServerInfo(ctx); err != nil {
@@ -296,6 +297,7 @@ func (*Manager) createSessionManager(
 		return nil, errors.Trace(err)
 	}
 	infoCache := infoschema.NewCache(store, int(vardef.SchemaVersionCacheLimit.Load()))
+	minTSReporter.infoCache = infoCache
 	isSyncer := issyncer.NewCrossKSSyncer(store, infoCache, vardef.GetSchemaLease(), sessPool, isValidator, ks)
 	isSyncer.InitRequiredFields(
 		func() sessmgr.InfoSchemaCoordinator {
