@@ -30,6 +30,7 @@ go_library(
         "//pkg/kv",
         "//pkg/meta",
         "//pkg/meta/model",
+        "//pkg/session/cursor",
         "//pkg/session/sessmgr",
         "//pkg/sessionctx",
         "//pkg/sessionctx/vardef",
