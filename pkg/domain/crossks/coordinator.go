@@ -79,7 +79,8 @@ func (c *schemaCoordinator) CheckOldRunningTxn(jobs map[int64]*mdldef.JobMDL) {
 
 func (*schemaCoordinator) KillNonFlashbackClusterConn() {}
 
-// minStartTS reads published process information rather than mutable session variables.
+// minStartTS gets the min start TS for sessions, the logic is copied from
+// InfoSyncer.ReportMinStartTS
 func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -90,7 +91,6 @@ func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 			continue
 		}
 
-		// Copied from InfoSyncer.ReportMinStartTS
 		if info.StmtCtx != nil && info.StmtCtx.IsDDLJobInQueue.Load() {
 			// Ignore DDL sessions.
 			continue
