@@ -31,6 +31,7 @@ go_library(
         "//pkg/meta",
         "//pkg/meta/model",
         "//pkg/session/cursor",
+        "//pkg/session/sessionapi",
         "//pkg/session/sessmgr",
         "//pkg/sessionctx",
         "//pkg/sessionctx/vardef",

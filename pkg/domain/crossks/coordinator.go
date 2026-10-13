@@ -20,6 +20,7 @@ import (
 
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
 	"github.com/pingcap/tidb/pkg/session/cursor"
+	"github.com/pingcap/tidb/pkg/session/sessionapi"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 )
@@ -86,6 +87,17 @@ func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 	defer c.mu.RUnlock()
 	minStartTS := currentTS
 	for se := range c.sessions {
+		// These sessions are internal sessions (see StoreInternalSession), so read
+		// the live txn info the same way GetInternalSessionStartTSList does, rather
+		// than relying on a caller to have refreshed ShowProcess's cached snapshot.
+		if sess, ok := se.(sessionapi.Session); ok {
+			if txnInfo := sess.TxnInfo(); txnInfo != nil {
+				if ts := txnInfo.StartTS; ts > lowerLimit && ts < minStartTS {
+					minStartTS = ts
+				}
+			}
+		}
+
 		info := se.ShowProcess()
 		if info == nil {
 			continue
