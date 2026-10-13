@@ -18,14 +18,12 @@ import (
 	"context"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/pkg/executor/importer"
 	"github.com/pingcap/tidb/pkg/infoschema"
 	infoschemactx "github.com/pingcap/tidb/pkg/infoschema/context"
 	"github.com/pingcap/tidb/pkg/parser/ast"
-	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/planner/core/base"
 	"github.com/pingcap/tidb/pkg/planner/plannersession"
 	"github.com/pingcap/tidb/pkg/sessionctx"
@@ -87,10 +85,10 @@ func newImportQuerySession(
 	vars.SnapshotTS = q.ReadTS
 	vars.SnapshotInfoschema = is
 	vars.StmtCtx.InitFromPBFlagAndTz(q.PushDownFlags, vars.Location())
-	// Publish the snapshot before compilation; cross-keyspace GC reporting reads
-	// ProcessInfo, and the lazy transaction may not yet have a start TS.
-	if pi, ok := sctx.(processinfoSetter); ok {
-		pi.SetProcessInfo(node.Text(), time.Now(), mysql.ComQuery, 0)
+	// The data readers read at SnapshotTS without activating the txn, so activate
+	// it here; the active txn at ReadTS is what GC safepoint reporting protects.
+	if _, err := sessiontxn.GetTxnManager(sctx).ActivateTxn(); err != nil {
+		return nil, nil, err
 	}
 	querySession := &importQuerySession{Context: sctx, schema: is}
 	querySession.PlanCtxExtended = plannersession.NewPlanCtxExtended(querySession)

@@ -78,7 +78,13 @@ func TestImportQueryPlanExecution(t *testing.T) {
 				stmtSQL := "import into unused_target from (" + sql + ") with thread=1"
 				captured, err := executor.CaptureImportQuery(tk.Session(), stmtSQL)
 				require.NoError(t, err)
+				se, err := session.CreateSession4Test(store)
+				require.NoError(t, err)
+				defer se.Close()
 				testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/executor/afterImportQueryOptimize", func(p base.PhysicalPlan) {
+					txnInfo := se.TxnInfo()
+					require.NotNil(t, txnInfo)
+					require.Equal(t, captured.ReadTS, txnInfo.StartTS)
 					vars := p.SCtx().GetSessionVars()
 					require.EqualValues(t, 32<<20, vars.MemQuotaQuery)
 					if strings.HasPrefix(sql, "select /*+") {
@@ -97,14 +103,10 @@ func TestImportQueryPlanExecution(t *testing.T) {
 				for _, row := range tk.MustQuery(sql).Rows() {
 					expected = append(expected, fmt.Sprint(row))
 				}
-				se, err := session.CreateSession4Test(store)
-				require.NoError(t, err)
-				defer se.Close()
 				output := make(chan importer.QueryChunk, len(expected)+1)
 				err = importer.RunImportQuery(context.Background(), se, captured, stmtSQL, 32<<20, output)
 				require.NoError(t, err)
-				require.NotNil(t, se.ShowProcess())
-				require.Equal(t, captured.ReadTS, se.ShowProcess().CurTxnStartTS)
+				require.Nil(t, se.TxnInfo())
 				close(output)
 				var got []string
 				for result := range output {

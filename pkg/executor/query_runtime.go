@@ -164,6 +164,7 @@ func runImportQuery(
 	if err != nil {
 		return err
 	}
+	defer sctx.RollbackTxn(ctx)
 
 	e, err := buildImportQueryExecutor(ctx, workerSession, node)
 	if err != nil {
