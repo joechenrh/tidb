@@ -125,6 +125,28 @@ func (pi *ProcessInfo) String() string {
 	return fmt.Sprintf("{id:%v, user:%v, host:%v, db:%v, command:%v, time:%v, state:%v, info:%v}", rows...)
 }
 
+// UpdateMinStartTS folds pi's current transaction start TS and any cursor-held
+// start TS into minStartTS, honoring lowerLimit. DDL sessions are skipped since
+// their long-held StartTS is already protected by schema-version based GC
+// safety, not this mechanism.
+func UpdateMinStartTS(pi *ProcessInfo, lowerLimit, minStartTS uint64) uint64 {
+	if pi.StmtCtx != nil && pi.StmtCtx.IsDDLJobInQueue.Load() {
+		return minStartTS
+	}
+	if ts := pi.CurTxnStartTS; ts > lowerLimit && ts < minStartTS {
+		minStartTS = ts
+	}
+	if pi.CursorTracker != nil {
+		pi.CursorTracker.RangeCursor(func(c cursor.Handle) bool {
+			if startTS := c.GetState().StartTS; startTS > lowerLimit && startTS < minStartTS {
+				minStartTS = startTS
+			}
+			return true
+		})
+	}
+	return minStartTS
+}
+
 func (pi *ProcessInfo) txnStartTs(tz *time.Location) (txnStart string) {
 	if pi.CurTxnStartTS > 0 {
 		physicalTime := oracle.GetTimeFromTS(pi.CurTxnStartTS)

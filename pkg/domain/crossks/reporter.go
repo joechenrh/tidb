@@ -39,7 +39,7 @@ type minStartTSReporter struct {
 }
 
 // ReportMinStartTS reports self server min start timestamp to ETCD.
-// The main logic is copied from InfoSyncer.minStartTSReporter
+// The main logic is copied from InfoSyncer.ReportMinStartTS
 func (r *minStartTSReporter) ReportMinStartTS(store kv.Storage, session *concurrency.Session) {
 	if r.etcdCli == nil {
 		return

@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
-	"github.com/pingcap/tidb/pkg/session/cursor"
 	"github.com/pingcap/tidb/pkg/session/sessionapi"
+	"github.com/pingcap/tidb/pkg/session/sessmgr"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 )
@@ -80,16 +80,21 @@ func (c *schemaCoordinator) CheckOldRunningTxn(jobs map[int64]*mdldef.JobMDL) {
 
 func (*schemaCoordinator) KillNonFlashbackClusterConn() {}
 
-// minStartTS gets the min start TS for sessions, the logic is copied from
-// InfoSyncer.ReportMinStartTS
+// minStartTS gets the min start TS for sessions. InfoSyncer.ReportMinStartTS
+// keeps two separate collections (ShowProcessList for user connections,
+// GetInternalSessionStartTSList for internal sessions) because a real TiDB
+// server has both; crossks only ever pools internal sessions (see
+// StoreInternalSession), so both checks are folded into one loop here. The
+// per-ProcessInfo portion (DDL skip, CurTxnStartTS, cursor scan) is shared via
+// sessmgr.UpdateMinStartTS; keep it in sync with InfoSyncer.ReportMinStartTS
+// if GC safety rules there change.
 func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	minStartTS := currentTS
 	for se := range c.sessions {
-		// These sessions are internal sessions (see StoreInternalSession), so read
-		// the live txn info the same way GetInternalSessionStartTSList does, rather
-		// than relying on a caller to have refreshed ShowProcess's cached snapshot.
+		// ProcessInfo is a cached snapshot, only refreshed by an explicit
+		// SetProcessInfo/UpdateProcessInfo call, so read the live txn info too.
 		if sess, ok := se.(sessionapi.Session); ok {
 			if txnInfo := sess.TxnInfo(); txnInfo != nil {
 				if ts := txnInfo.StartTS; ts > lowerLimit && ts < minStartTS {
@@ -98,27 +103,8 @@ func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 			}
 		}
 
-		info := se.ShowProcess()
-		if info == nil {
-			continue
-		}
-
-		if info.StmtCtx != nil && info.StmtCtx.IsDDLJobInQueue.Load() {
-			// Ignore DDL sessions.
-			continue
-		}
-		if ts := info.CurTxnStartTS; ts > lowerLimit && ts < minStartTS {
-			minStartTS = ts
-		}
-
-		if info.CursorTracker != nil {
-			info.CursorTracker.RangeCursor(func(c cursor.Handle) bool {
-				startTS := c.GetState().StartTS
-				if startTS > lowerLimit && startTS < minStartTS {
-					minStartTS = startTS
-				}
-				return true
-			})
+		if info := se.ShowProcess(); info != nil {
+			minStartTS = sessmgr.UpdateMinStartTS(info, lowerLimit, minStartTS)
 		}
 	}
 	return minStartTS
