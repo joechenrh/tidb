@@ -24,8 +24,8 @@ import (
 	"github.com/pingcap/tidb/pkg/domain/infosync"
 	"github.com/pingcap/tidb/pkg/keyspace"
 	"github.com/pingcap/tidb/pkg/kv"
-	"github.com/pingcap/tidb/pkg/session/sessmgr"
-	"github.com/pingcap/tidb/pkg/sessionctx"
+	"github.com/pingcap/tidb/pkg/session/sessionapi"
+	"github.com/pingcap/tidb/pkg/session/txninfo"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	etcdutil "github.com/pingcap/tidb/pkg/util/etcd"
 	"github.com/stretchr/testify/require"
@@ -38,11 +38,11 @@ import (
 )
 
 type reportedSession struct {
-	sessionctx.Context
-	info *sessmgr.ProcessInfo
+	sessionapi.Session
+	txnInfo *txninfo.TxnInfo
 }
 
-func (s *reportedSession) ShowProcess() *sessmgr.ProcessInfo { return s.info }
+func (s *reportedSession) TxnInfo() *txninfo.TxnInfo { return s.txnInfo }
 
 type reportTSStore struct {
 	kv.Storage
@@ -101,11 +101,11 @@ func TestCrossKSMinStartTSReporter(t *testing.T) {
 				require.NoError(t, err)
 				require.Empty(t, other.Kvs)
 			}
-			old := &reportedSession{info: &sessmgr.ProcessInfo{CurTxnStartTS: oldTS}}
-			same := &reportedSession{info: &sessmgr.ProcessInfo{CurTxnStartTS: oldTS}}
-			newer := &reportedSession{info: &sessmgr.ProcessInfo{CurTxnStartTS: newTS}}
+			old := &reportedSession{txnInfo: &txninfo.TxnInfo{StartTS: oldTS}}
+			same := &reportedSession{txnInfo: &txninfo.TxnInfo{StartTS: oldTS}}
+			newer := &reportedSession{txnInfo: &txninfo.TxnInfo{StartTS: newTS}}
 			idle := &reportedSession{}
-			expired := &reportedSession{info: &sessmgr.ProcessInfo{CurTxnStartTS: oracle.GoTimeToTS(now.Add(-601 * time.Second))}}
+			expired := &reportedSession{txnInfo: &txninfo.TxnInfo{StartTS: oracle.GoTimeToTS(now.Add(-601 * time.Second))}}
 			for _, se := range []*reportedSession{old, same, newer, idle, expired} {
 				coordinator.StoreInternalSession(se)
 			}

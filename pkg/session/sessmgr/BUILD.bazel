@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/infoschema/issyncer/mdldef",
-        "//pkg/kv",
         "//pkg/parser/auth",
         "//pkg/parser/mysql",
         "//pkg/resourcegroup",

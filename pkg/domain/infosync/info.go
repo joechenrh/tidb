@@ -45,6 +45,7 @@ import (
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/parser/terror"
 	"github.com/pingcap/tidb/pkg/resourcegroup"
+	"github.com/pingcap/tidb/pkg/session/cursor"
 	"github.com/pingcap/tidb/pkg/session/sessmgr"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	"github.com/pingcap/tidb/pkg/store/helper"
@@ -649,7 +650,19 @@ func (is *InfoSyncer) ReportMinStartTS(store kv.Storage, session *concurrency.Se
 	logutil.BgLogger().Debug("ReportMinStartTS", zap.Uint64("initial minStartTS", minStartTS),
 		zap.Uint64("StartTSLowerLimit", startTSLowerLimit))
 	for _, info := range pl {
-		minStartTS = sessmgr.UpdateMinStartTS(info, startTSLowerLimit, minStartTS)
+		if info.StmtCtx != nil && info.StmtCtx.IsDDLJobInQueue.Load() {
+			// Ignore DDL sessions.
+			continue
+		}
+		minStartTS = kv.UpdateMinStartTS(info.CurTxnStartTS, startTSLowerLimit, minStartTS)
+
+		if info.CursorTracker != nil {
+			info.CursorTracker.RangeCursor(func(c cursor.Handle) bool {
+				startTS := c.GetState().StartTS
+				minStartTS = kv.UpdateMinStartTS(startTS, startTSLowerLimit, minStartTS)
+				return true
+			})
+		}
 	}
 
 	for _, innerTS := range innerSessionStartTSList {

@@ -21,7 +21,6 @@ import (
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/session/sessionapi"
-	"github.com/pingcap/tidb/pkg/session/sessmgr"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 )
@@ -81,29 +80,21 @@ func (c *schemaCoordinator) CheckOldRunningTxn(jobs map[int64]*mdldef.JobMDL) {
 
 func (*schemaCoordinator) KillNonFlashbackClusterConn() {}
 
-// minStartTS gets the min start TS for sessions. InfoSyncer.ReportMinStartTS
-// keeps two separate collections (ShowProcessList for user connections,
-// GetInternalSessionStartTSList for internal sessions) because a real TiDB
-// server has both; crossks only ever pools internal sessions (see
-// StoreInternalSession), so both checks are folded into one loop here. The
-// per-ProcessInfo portion (DDL skip, CurTxnStartTS, cursor scan) is shared via
-// sessmgr.UpdateMinStartTS; keep it in sync with InfoSyncer.ReportMinStartTS
-// if GC safety rules there change.
+// minStartTS gets the min start TS of the active txns in the pooled internal
+// sessions, the same way GetInternalSessionStartTSList does on a TiDB server.
+// A caller reading at a fixed TS is protected only after it activates the
+// session txn at that TS.
 func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	minStartTS := currentTS
 	for se := range c.sessions {
-		// ProcessInfo is a cached snapshot, only refreshed by an explicit
-		// SetProcessInfo/UpdateProcessInfo call, so read the live txn info too.
-		if sess, ok := se.(sessionapi.Session); ok {
-			if txnInfo := sess.TxnInfo(); txnInfo != nil {
-				minStartTS = kv.UpdateMinStartTS(txnInfo.StartTS, lowerLimit, minStartTS)
-			}
+		sess, ok := se.(sessionapi.Session)
+		if !ok {
+			continue
 		}
-
-		if info := se.ShowProcess(); info != nil {
-			minStartTS = sessmgr.UpdateMinStartTS(info, lowerLimit, minStartTS)
+		if txnInfo := sess.TxnInfo(); txnInfo != nil {
+			minStartTS = kv.UpdateMinStartTS(txnInfo.StartTS, lowerLimit, minStartTS)
 		}
 	}
 	return minStartTS

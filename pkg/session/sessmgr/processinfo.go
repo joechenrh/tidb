@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
-	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/parser/auth"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/resourcegroup"
@@ -124,24 +123,6 @@ func (pi *ProcessInfo) ToRowForShow(full bool) []any {
 func (pi *ProcessInfo) String() string {
 	rows := pi.ToRowForShow(false)
 	return fmt.Sprintf("{id:%v, user:%v, host:%v, db:%v, command:%v, time:%v, state:%v, info:%v}", rows...)
-}
-
-// UpdateMinStartTS folds pi's current transaction start TS and any cursor-held
-// start TS into minStartTS, honoring lowerLimit. DDL sessions are skipped since
-// their long-held StartTS is already protected by schema-version based GC
-// safety, not this mechanism.
-func UpdateMinStartTS(pi *ProcessInfo, lowerLimit, minStartTS uint64) uint64 {
-	if pi.StmtCtx != nil && pi.StmtCtx.IsDDLJobInQueue.Load() {
-		return minStartTS
-	}
-	minStartTS = kv.UpdateMinStartTS(pi.CurTxnStartTS, lowerLimit, minStartTS)
-	if pi.CursorTracker != nil {
-		pi.CursorTracker.RangeCursor(func(c cursor.Handle) bool {
-			minStartTS = kv.UpdateMinStartTS(c.GetState().StartTS, lowerLimit, minStartTS)
-			return true
-		})
-	}
-	return minStartTS
 }
 
 func (pi *ProcessInfo) txnStartTs(tz *time.Location) (txnStart string) {
