@@ -23,7 +23,8 @@ import (
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 )
 
-// schemaCoordinator tracks internal sessions for schema coordination and GC reporting.
+// schemaCoordinator is used to manage internal sessions to coordinate schema
+// changes, see InfoSchemaCoordinator for more details.
 type schemaCoordinator struct {
 	printMDLLogTime time.Time
 	mu              sync.RWMutex

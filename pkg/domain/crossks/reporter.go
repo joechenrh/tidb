@@ -42,12 +42,14 @@ func (r *minStartTSReporter) ReportMinStartTS(store kv.Storage, session *concurr
 	if r.etcdCli == nil {
 		return
 	}
+	// Calculate the lower limit of the start timestamp to avoid extremely old transaction delaying GC.
 	currentVer, err := store.CurrentVersion(kv.GlobalTxnScope)
 	if err != nil {
-		logutil.BgLogger().Warn("get cross keyspace min start TS failed", zap.Error(err))
+		logutil.BgLogger().Warn("update cross keyspace minStartTS failed", zap.Error(err))
 		return
 	}
 	now := oracle.GetTimeFromTS(currentVer.Ver)
+	// GCMaxWaitTime is in seconds, GCMaxWaitTime * 1000 converts it to milliseconds.
 	lowerLimit := oracle.GoTimeToLowerLimitStartTS(now, vardef.GCMaxWaitTime.Load()*1000)
 	minTS := r.coordinator.minStartTS(lowerLimit, oracle.GoTimeToTS(now))
 
@@ -60,8 +62,10 @@ func (r *minStartTSReporter) ReportMinStartTS(store kv.Storage, session *concurr
 	// connection so unified GC can report at the un-namespaced root path.
 	client := clientv3.NewKV(r.etcdCli)
 	err = ddlutil.PutKVToEtcd(context.Background(), client, serverinfo.KeyOpDefaultRetryCnt, path,
-		strconv.FormatUint(minTS, 10), clientv3.WithLease(session.Lease()))
+		strconv.FormatUint(minTS, 10),
+		clientv3.WithLease(session.Lease()))
 	if err != nil {
-		logutil.BgLogger().Warn("report cross keyspace min start TS failed", zap.String("path", path), zap.Error(err))
+		logutil.BgLogger().Warn("update cross keyspace minStartTS failed", zap.Error(err))
 	}
+	logutil.BgLogger().Debug("cross keyspace ReportMinStartTS", zap.Uint64("final minStartTS", minTS))
 }
