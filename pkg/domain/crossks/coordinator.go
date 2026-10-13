@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pingcap/tidb/pkg/infoschema/issyncer/mdldef"
+	"github.com/pingcap/tidb/pkg/session/cursor"
 	"github.com/pingcap/tidb/pkg/sessionctx"
 	"github.com/pingcap/tidb/pkg/sessionctx/variable"
 )
@@ -82,15 +83,31 @@ func (*schemaCoordinator) KillNonFlashbackClusterConn() {}
 func (c *schemaCoordinator) minStartTS(lowerLimit, currentTS uint64) uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	minTS := currentTS
+	minStartTS := currentTS
 	for se := range c.sessions {
 		info := se.ShowProcess()
-		if info == nil || (info.StmtCtx != nil && info.StmtCtx.IsDDLJobInQueue.Load()) {
+		if info == nil {
 			continue
 		}
-		if ts := info.CurTxnStartTS; ts > lowerLimit && ts < minTS {
-			minTS = ts
+
+		// Copied from InfoSyncer.ReportMinStartTS
+		if info.StmtCtx != nil && info.StmtCtx.IsDDLJobInQueue.Load() {
+			// Ignore DDL sessions.
+			continue
+		}
+		if ts := info.CurTxnStartTS; ts > lowerLimit && ts < minStartTS {
+			minStartTS = ts
+		}
+
+		if info.CursorTracker != nil {
+			info.CursorTracker.RangeCursor(func(c cursor.Handle) bool {
+				startTS := c.GetState().StartTS
+				if startTS > lowerLimit && startTS < minStartTS {
+					minStartTS = startTS
+				}
+				return true
+			})
 		}
 	}
-	return minTS
+	return minStartTS
 }
