@@ -110,6 +110,7 @@ func CaptureImportQuery(sctx sessionctx.Context, sql string) (*importer.QueryPla
 	if err := plannercore.Preprocess(
 		context.Background(), sctx, nodeW,
 		plannercore.WithPreprocessorReturn(ret),
+		plannercore.InImportInto,
 	); err != nil {
 		return nil, err
 	}

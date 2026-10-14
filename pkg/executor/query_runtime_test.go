@@ -182,6 +182,8 @@ func TestImportQueryPlanExecution(t *testing.T) {
 		queryTK.MustExec("use test")
 		queryTK.MustQuery("select * from query_capture_schema").Check(testkit.Rows())
 		require.NoError(t, queryTK.Session().PrepareTxnCtx(context.Background(), nil))
+		// Capture runs inside the IMPORT INTO statement, which is not read-only.
+		queryTK.Session().GetSessionVars().StmtCtx.IsReadOnly = false
 		ddlTK.MustExec("alter table query_capture_schema add column j int default 42")
 		txnIS := queryTK.Session().GetSessionVars().TxnCtx.InfoSchema.(infoschema.InfoSchema)
 		tbl, err := txnIS.TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("query_capture_schema"))
@@ -196,6 +198,8 @@ func TestImportQueryPlanExecution(t *testing.T) {
 		require.True(t, ok)
 		require.Len(t, q.Tables[db.ID], 1)
 		require.Len(t, q.Tables[db.ID][0].Columns, 1)
+		_, locked := queryTK.Session().GetSessionVars().GetRelatedTableForMDL().Load(tbl.Meta().ID)
+		require.False(t, locked)
 	})
 	t.Run("submitted table definitions", func(t *testing.T) {
 		require.NoError(t, tk.Session().PrepareTxnCtx(context.Background(), nil))
